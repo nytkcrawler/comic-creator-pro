@@ -167,7 +167,7 @@ async function generateWithOpenAI(prompt, config, previousResponseId = null, ref
   }
 
   const requestBody = {
-    model: process.env.OPENAI_RESPONSE_MODEL || "gpt-5.6",
+    model: process.env.OPENAI_RESPONSE_MODEL || "gpt-5.5",
     input: [{ role: "user", content: inputContent }],
     tools: [{
       type: "image_generation",
