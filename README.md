@@ -1,51 +1,79 @@
 # Comic Creator Pro
 
-A mobile-first React + Express comic creation studio with Venice and Replicate provider adapters.
+A mobile-first React + Express comic creation studio with OpenAI, Venice and Replicate image providers. The OpenAI route uses the Responses API image-generation tool for reference-image input and multi-turn refinements.
 
 ## Requirements
-- Node.js 20+
-- A Venice API key and/or Replicate API token
-- A Replicate model whose input schema accepts `prompt` and `num_outputs`
+
+- Node.js 26.x
+- A Supabase project with the Comic Creator Pro schema and private storage buckets
+- At least one image provider API key (OpenAI, Venice or Replicate)
 
 ## Run locally
-1. Extract the project.
-2. Run `npm install`.
-3. Copy `.env.example` to `.env`.
-4. Add provider credentials to `.env`.
-5. Run `npm run dev`.
-6. Open http://localhost:5173.
 
-For production:
-- `npm run build`
-- `npm start`
-- Deploy the Node server and built `dist` folder together.
-- Set environment variables in your hosting provider's secret manager.
+1. Install dependencies with `npm install`.
+2. Copy `.env.example` to `.env`.
+3. Set the Supabase URL and publishable key in both the `VITE_*` browser variables and the server variables.
+4. Add at least one provider API key to the server-only variables.
+5. Run `npm run dev` and open http://localhost:5173.
 
-## Provider setup
+## Authentication and Supabase
 
-### Venice
+- Users sign in with a passwordless email link through Supabase Auth.
+- Add your local app URL and your Vercel deployment URLs to Supabase Auth → URL Configuration → Redirect URLs. Suggested entries:
+  - `http://localhost:5173/**`
+  - `https://comic-creator-pro-five.vercel.app/**`
+  - `https://comic-creator-pro-git-setup-vercel-server-nytkcrawler-3581.vercel.app/**`
+- Comic pages are stored in the private `comic-panels` bucket and their metadata is stored in `public.comics` and `public.panels`.
+- Character reference images are stored in the private `character-refs` bucket. Character sets are stored in `public.character_sets` and `public.characters`.
+- Ownership is enforced with Supabase Row Level Security. The browser uses only a publishable key; never put a Supabase secret or service-role key in the browser.
+- A database-backed quota limits each signed-in account to 10 generated pages per hour in the current beta. The limit is enforced server-side by `public.reserve_generation()`.
+
+## OpenAI
+
+Set:
+- `OPENAI_API_KEY`
+- `OPENAI_RESPONSE_MODEL` (default: `gpt-5.5`)
+
+The app sends one Responses API request for one complete comic page, with the hosted image-generation tool configured to create one page. OpenAI selects the underlying GPT Image model for this Responses API flow. Up to four uploaded reference images are included as image inputs. The resulting response ID is saved with the comic and used for follow-up refinement requests.
+
+OpenAI API usage is billed separately from ChatGPT subscriptions. Image model access may require API organization verification and separate API billing.
+
+## Venice
+
 Set:
 - `VENICE_API_KEY`
 - `VENICE_IMAGE_MODEL` (default: `z-image-turbo`)
 - `VENICE_MODERATION=auto` or `low`
 
-Venice documents `moderation=low` as returning adult-classified images without blur. It is not a guarantee of unrestricted generation or a bypass of Venice's policies. Keep `auto` if you prefer automatic blur.
+Venice moderation settings do not bypass Venice policies.
 
-### Replicate
+## Replicate
+
 Set:
 - `REPLICATE_API_TOKEN`
 - `REPLICATE_MODEL_OWNER`
 - `REPLICATE_MODEL_NAME`
+- Optional: `REPLICATE_MODEL_VERSION`, `REPLICATE_EXTRA_INPUT_JSON`, `REPLICATE_REFERENCE_INPUT_KEY`
 
-The adapter sends exactly one prediction for the entire page and sets `num_outputs: 1`. It does not issue one prediction per panel. Choose a Replicate model whose input schema supports both `prompt` and `num_outputs`. Replicate models have different input schemas. Add model-specific fields in `REPLICATE_EXTRA_INPUT_JSON`, for example:
-`{"aspect_ratio":"2:3","output_format":"png"}`
+The adapter starts exactly one prediction for the whole page and sets `num_outputs: 1`. Model input schemas vary, so check the selected model's accepted reference-image fields.
 
-If your chosen model requires a pinned version, set `REPLICATE_MODEL_VERSION` to the full version hash. If the model supports image references, set `REPLICATE_REFERENCE_INPUT_KEY` to the exact input field name it expects. The UI's file picker is a placeholder; production reference-image support requires uploading files to private object storage and passing signed HTTPS URLs to a model that accepts them.
+## Vercel
 
-## Notes / production hardening
-- API keys are server-side only. Never rename them with a `VITE_` prefix.
-- Add authentication, per-user quotas, rate limiting, persistent storage and image cleanup before public deployment.
-- The app stores configuration, saved character text and recent generated images in the browser's localStorage. Do not use this for sensitive material on shared devices.
-- **Single-page generation is a core invariant:** one click sends one generation request, and that request asks the image model to render the complete page with all requested panels in one image. Venice is called with `n: 1`; Replicate receives one prediction with `num_outputs: 1`. Replicate status checks only poll the same prediction and do not generate additional images. There is deliberately no per-panel generation pipeline. Exact panel count, panel borders and legible lettering still depend on the selected model following the prompt.
-- Only use provider models and content settings permitted by their terms. The adult-mode checkbox is an age-gated creative setting, not a way to bypass provider safeguards. All depicted characters must be adults. Never create sexual content involving minors, age-ambiguous characters, coercion or non-consensual exploitation.
-- Before accepting uploads from users, add file type/size validation, malware scanning, access controls and signed upload URLs.
+- Framework preset: Node.js
+- Install command: `npm install`
+- Build command: `npm run build`
+- Output directory: leave unset. The Express app serves the Vite `dist` build.
+- Runtime: Node.js 26.x
+- Function region: Mumbai (`bom1`)
+
+Add browser Supabase settings as plain environment variables. Provider keys must be encrypted server-only environment variables and must not use a `VITE_` prefix. For the OpenAI provider, add `OPENAI_API_KEY` to Production, Preview and Development after API billing and model access are ready.
+
+## Important safeguards and limitations
+
+- Never expose provider API keys, Supabase secret keys or service-role keys to browser code.
+- Comic pages and character sets are stored in Supabase using per-user RLS and private storage paths.
+- The initial beta quota is 10 page generations per user per hour.
+- The app does not use ChatGPT subscription credits. OpenAI API usage is separately billed.
+- A page is requested as one image in one provider call. Exact panel count, typography and panel layout still depend on the image model following the prompt.
+- The mature-content setting is not a way to bypass provider safeguards. All depicted characters must be clearly adults. Never create sexual content involving minors, age-ambiguous characters, coercion or non-consensual exploitation.
+- Before inviting the public, add an admin review process, monitoring and a documented user support / data deletion process.
