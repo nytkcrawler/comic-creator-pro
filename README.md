@@ -32,7 +32,7 @@ A mobile-first React + Express comic creation studio with OpenAI, Venice and Rep
 
 Set:
 - `OPENAI_API_KEY`
-- `OPENAI_RESPONSE_MODEL` (default: `gpt-5.6`)
+- `OPENAI_RESPONSE_MODEL` (default: `gpt-5.5`)
 
 The app sends one Responses API request for one complete comic page, with the hosted image-generation tool configured to create one page. OpenAI selects the underlying GPT Image model for this Responses API flow. Up to four uploaded reference images are included as image inputs. The resulting response ID is saved with the comic and used for follow-up refinement requests.
 
