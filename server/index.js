@@ -143,7 +143,6 @@ async function generateWithOpenAI(prompt, config, previousResponseId = null, ref
     input: [{ role: "user", content: inputContent }],
     tools: [{
       type: "image_generation",
-      model: process.env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-sunburst",
       action: refinement ? "auto" : "generate"
     }],
     store: true
