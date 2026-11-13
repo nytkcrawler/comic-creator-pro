@@ -1,7 +1,13 @@
 /**
- * Vercel's Node.js server entrypoint.
+ * Vercel's Express server entrypoint.
  *
- * The existing Express server serves the Vite build and the /api routes.
- * Local development continues to use "npm run dev" and server/index.js.
+ * Importing the Express application keeps the same API routes and Vite static
+ * assets for local and hosted use. The app listens on its own port only locally.
  */
-import "./server/index.js";
+import express from "express";
+import app from "./server/index.js";
+
+const handler = express();
+handler.use(app);
+
+export default handler;
