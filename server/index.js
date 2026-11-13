@@ -262,6 +262,44 @@ app.post("/api/generate", requireAuthenticatedUser, enforceGenerationLimit, asyn
   }
 });
 
+
+app.post("/api/refine", requireAuthenticatedUser, enforceGenerationLimit, async (req, res) => {
+  try {
+    const { comicId, instruction } = req.body || {};
+    if (typeof comicId !== "string" || !comicId.trim()) {
+      return res.status(400).json({ error: "Choose a saved OpenAI comic to refine." });
+    }
+    if (typeof instruction !== "string" || !instruction.trim()) {
+      return res.status(400).json({ error: "Describe the change you want to make." });
+    }
+
+    const { data: comic, error: comicError } = await req.userSupabase
+      .from("comics")
+      .select("generation_config")
+      .eq("id", comicId)
+      .single();
+
+    if (comicError || !comic) return res.status(404).json({ error: "Saved comic not found." });
+
+    const generationConfig = comic.generation_config || {};
+    if (generationConfig.provider !== "openai" || !generationConfig.responseId) {
+      return res.status(400).json({ error: "This comic does not have an OpenAI editing session. Generate it with OpenAI first." });
+    }
+
+    const result = await generateWithOpenAI(
+      "",
+      generationConfig,
+      generationConfig.responseId,
+      instruction
+    );
+
+    res.json({ ...result, quota: req.generationQuota });
+  } catch (error) {
+    console.error("[comic-refine]", error);
+    res.status(502).json({ error: error.message || "Comic refinement failed." });
+  }
+});
+
 app.get("/api/replicate/:id", requireAuthenticatedUser, async (req, res) => {
   try {
     const token = process.env.REPLICATE_API_TOKEN;
