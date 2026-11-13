@@ -222,12 +222,67 @@ export default function App() {
   const set = (key, value) => setConfig(c => ({ ...c, [key]: value }));
   const promptPreview = useMemo(() => config.style + " · " + config.panels + " panels · " + config.genre + " · " + config.layout, [config]);
 
+  async function toOpenAiReferenceDataUrl(ref) {
+    if (typeof ref?.url !== "string") throw new Error("A saved character reference is missing its image.");
+    if (ref.url.startsWith("data:image/")) {
+      if (ref.url.length > 3 * 1024 * 1024) throw new Error("Each OpenAI reference image must be 2 MB or smaller. Please re-upload a smaller image.");
+      return ref.url;
+    }
+    const configuredUrl = import.meta.env.VITE_SUPABASE_URL;
+    if (!configuredUrl) throw new Error("Supabase is not configured.");
+    const source = new URL(ref.url);
+    const trustedHost = new URL(configuredUrl).host;
+    if (source.host !== trustedHost || !source.pathname.includes("/storage/v1/object/sign/character-refs/")) {
+      throw new Error("A saved reference image URL could not be verified. Please upload the reference again.");
+    }
+    const response = await fetch(ref.url);
+    if (!response.ok) throw new Error("Could not load a saved character reference image.");
+    const blob = await response.blob();
+    if (!["image/png","image/jpeg","image/webp"].includes(blob.type)) throw new Error("Character references must be PNG, JPEG or WebP images.");
+    if (blob.size > 2 * 1024 * 1024) throw new Error("Each OpenAI reference image must be 2 MB or smaller. Please re-upload a smaller image.");
+    return await new Promise((resolve,reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(new Error("Could not prepare a saved character reference image."));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  async function handleReferenceFiles(event) {
+    const files = Array.from(event.target.files || []);
+    event.target.value = "";
+    const remaining = Math.max(0, 4 - refs.length);
+    if (!remaining) {
+      setError("You can attach up to four character reference images.");
+      return;
+    }
+    if (files.length > remaining) setError("Only four character reference images can be attached at a time.");
+    const accepted = files.slice(0, remaining);
+    for (const file of accepted) {
+      if (!["image/png","image/jpeg","image/webp"].includes(file.type)) {
+        setError("Character references must be PNG, JPEG or WebP images.");
+        continue;
+      }
+      if (file.size > 2 * 1024 * 1024) {
+        setError("Each character reference must be 2 MB or smaller.");
+        continue;
+      }
+      const reader = new FileReader();
+      reader.onload = () => setRefs(old => [...old, { name: file.name, url: String(reader.result) }].slice(0,4));
+      reader.onerror = () => setError("Could not read " + file.name + ".");
+      reader.readAsDataURL(file);
+    }
+  }
+
   async function generate() {
     setBusy(true); setError(""); setResult(""); setActiveComicId(null); setStatus("Sending your comic brief…");
     try {
       const { data: authData, error: authError } = await supabase.auth.getSession();
       if (authError || !authData?.session) throw new Error("Please sign in again before generating.");
-      const payload = { ...config, referenceImages: refs.map(x => x.url) };
+      const referenceImages = provider === "openai"
+        ? await Promise.all(refs.slice(0,4).map(toOpenAiReferenceDataUrl))
+        : refs.slice(0,4).map(x => x.url);
+      const payload = { ...config, referenceImages };
       const response = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: "Bearer " + authData.session.access_token },
@@ -417,7 +472,7 @@ export default function App() {
             <Field label="CHARACTER IDENTITY & REFERENCES"><textarea rows="3" value={config.characters} onChange={e => set("characters", e.target.value)}/></Field>
             <Field label="OUTFIT CONTINUITY"><input value={config.outfit} onChange={e => set("outfit", e.target.value)}/></Field>
             <div className="reference-drop"><ImagePlus size={20}/><div><b>Character reference images</b><small>Upload identity references. Replicate references are sent only when the selected model is configured to accept them.</small></div>
-              <input type="file" accept="image/*" multiple onChange={e => Array.from(e.target.files || []).forEach(file => { const reader = new FileReader(); reader.onload = () => setRefs(old => [...old, { name: file.name, url: String(reader.result) }]); reader.readAsDataURL(file); })}/>
+              <input type="file" accept="image/png,image/jpeg,image/webp" multiple onChange={handleReferenceFiles}/>
               {refs.length > 0 && <small>{refs.length} reference file(s) ready</small>}
             </div>
             <div id="characters" className="character-save"><input placeholder="Character set name" value={characterName} onChange={e => setCharacterName(e.target.value)}/><button className="outline-btn" onClick={saveCharacter}><Plus size={15}/> Save character setup</button></div>
