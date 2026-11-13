@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express from "express";
+import { createClient } from "@supabase/supabase-js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -7,7 +8,7 @@ const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 8787);
 const allowedPanels = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 12]);
-const allowedProviders = new Set(["venice", "replicate"]);
+const allowedProviders = new Set(["openai", "venice", "replicate"]);
 
 app.use(express.json({ limit: "25mb" }));
 
@@ -15,7 +16,7 @@ function clip(value, max) {
   return String(value ?? "").trim().slice(0, max);
 }
 
-function buildComicPrompt(config) {
+function buildComicPrompt(config, maxLength = 30000) {
   const panels = allowedPanels.has(Number(config.panels)) ? Number(config.panels) : 4;
   const dialogue = config.dialogue === "No Text"
     ? "No speech bubbles, captions or written text."
@@ -36,7 +37,7 @@ function buildComicPrompt(config) {
       : "Follow the image provider's content policy. All characters must be clearly adults."
   ].join("\n\n");
   // The Venice OpenAI-compatible endpoint has a 1,500-character prompt limit.
-  return prompt.slice(0, 1490);
+  return prompt.slice(0, maxLength);
 }
 
 function veniceSizeForRatio(ratio) {
@@ -66,6 +67,112 @@ function imageFromReplicateOutput(output) {
   if (typeof first === "string") return first;
   if (typeof first?.url === "string") return first.url;
   return null;
+}
+
+
+function createUserSupabaseClient(accessToken) {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_PUBLISHABLE_KEY;
+  if (!url || !key) throw new Error("Supabase server configuration is missing.");
+  return createClient(url, key, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { headers: { Authorization: "Bearer " + accessToken } }
+  });
+}
+
+async function requireAuthenticatedUser(req, res, next) {
+  try {
+    const authorization = req.headers.authorization || "";
+    const token = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
+    if (!token) return res.status(401).json({ error: "Sign in before using comic generation." });
+    const client = createUserSupabaseClient(token);
+    const { data, error } = await client.auth.getUser(token);
+    if (error || !data?.user) return res.status(401).json({ error: "Your session has expired. Please sign in again." });
+    req.user = data.user;
+    req.userSupabase = client;
+    next();
+  } catch (error) {
+    console.error("[auth-check]", error);
+    res.status(503).json({ error: error.message || "Could not verify your session." });
+  }
+}
+
+async function enforceGenerationLimit(req, res, next) {
+  try {
+    const { data, error } = await req.userSupabase.rpc("reserve_generation");
+    if (error) {
+      console.error("[generation-quota]", error);
+      return res.status(503).json({ error: "Could not verify your generation allowance. Please try again." });
+    }
+    if (!data?.allowed) {
+      return res.status(429).json({
+        error: "You've reached the current beta limit of 10 generated pages per hour. Please try again after the limit resets.",
+        quota: data
+      });
+    }
+    req.generationQuota = data;
+    next();
+  } catch (error) {
+    console.error("[generation-quota]", error);
+    res.status(503).json({ error: "Could not verify your generation allowance." });
+  }
+}
+
+function openAiInputImages(referenceImages) {
+  if (!Array.isArray(referenceImages)) return [];
+  return referenceImages
+    .filter(value => typeof value === "string" && /^data:image\/(png|jpeg|jpg|webp);base64,/i.test(value))
+    .slice(0, 4)
+    .map(imageUrl => ({ type: "input_image", image_url: imageUrl, detail: "auto" }));
+}
+
+async function generateWithOpenAI(prompt, config, previousResponseId = null, refinement = null) {
+  const key = process.env.OPENAI_API_KEY;
+  if (!key) throw new Error("OPENAI_API_KEY is missing on the server. Add it in Vercel Environment Variables to enable OpenAI generation.");
+
+  const inputContent = [];
+  if (refinement) {
+    inputContent.push({ type: "input_text", text: "Refine the previously generated comic page using this instruction. Preserve the established character identities, panel count and story continuity.\n\nRefinement: " + clip(refinement, 2000) });
+  } else {
+    inputContent.push({ type: "input_text", text: prompt });
+    inputContent.push(...openAiInputImages(config.referenceImages));
+  }
+
+  const requestBody = {
+    model: process.env.OPENAI_RESPONSE_MODEL || "gpt-5.6",
+    input: [{ role: "user", content: inputContent }],
+    tools: [{
+      type: "image_generation",
+      model: process.env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-sunburst",
+      action: refinement ? "auto" : "generate"
+    }],
+    store: true
+  };
+  if (previousResponseId) requestBody.previous_response_id = previousResponseId;
+
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + key, "Content-Type": "application/json" },
+    body: JSON.stringify(requestBody)
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = data.error?.message || data.message || "OpenAI image generation failed (" + response.status + ").";
+    throw new Error(message);
+  }
+
+  const imageCall = (data.output || []).find(item => item.type === "image_generation_call" && item.result);
+  if (!imageCall?.result) {
+    throw new Error(data.output_text || "OpenAI completed without returning a comic image.");
+  }
+
+  return {
+    image: "data:image/png;base64," + imageCall.result,
+    status: "succeeded",
+    responseId: data.id,
+    generationMode: "single-full-page",
+    pageImageCount: 1
+  };
 }
 
 async function generateWithVenice(prompt, config, model) {
@@ -127,6 +234,7 @@ async function generateWithReplicate(prompt, config) {
 
 app.get("/api/health", (_req, res) => {
   res.json({
+    openai: Boolean(process.env.OPENAI_API_KEY),
     venice: Boolean(process.env.VENICE_API_KEY),
     replicate: Boolean(process.env.REPLICATE_API_TOKEN && process.env.REPLICATE_MODEL_OWNER && process.env.REPLICATE_MODEL_NAME),
     generationMode: "single-full-page",
@@ -134,25 +242,27 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
-app.post("/api/generate", async (req, res) => {
+app.post("/api/generate", requireAuthenticatedUser, enforceGenerationLimit, async (req, res) => {
   try {
-    const { provider, config = {}, veniceModel } = req.body || {};
-    if (!allowedProviders.has(provider)) return res.status(400).json({ error: "Choose Venice or Replicate." });
+    const { provider, config = {}, veniceModel, previousResponseId, refinement } = req.body || {};
+    if (!allowedProviders.has(provider)) return res.status(400).json({ error: "Choose OpenAI, Venice or Replicate." });
     if (typeof config.scene !== "string" || !config.scene.trim()) return res.status(400).json({ error: "Describe the comic scene before generating." });
     const panels = Number(config.panels);
     if (!allowedPanels.has(panels)) return res.status(400).json({ error: "Choose a supported panel count." });
-    const prompt = buildComicPrompt({ ...config, panels });
-    const result = provider === "venice"
-      ? await generateWithVenice(prompt, config, veniceModel)
-      : await generateWithReplicate(prompt, config);
-    res.json(result);
+    const prompt = buildComicPrompt({ ...config, panels }, provider === "venice" ? 1490 : 30000);
+    const result = provider === "openai"
+      ? await generateWithOpenAI(prompt, config, previousResponseId || null, refinement || null)
+      : provider === "venice"
+        ? await generateWithVenice(prompt, config, veniceModel)
+        : await generateWithReplicate(prompt, config);
+    res.json({ ...result, quota: req.generationQuota });
   } catch (error) {
     console.error("[comic-generate]", error);
     res.status(502).json({ error: error.message || "Image generation failed." });
   }
 });
 
-app.get("/api/replicate/:id", async (req, res) => {
+app.get("/api/replicate/:id", requireAuthenticatedUser, async (req, res) => {
   try {
     const token = process.env.REPLICATE_API_TOKEN;
     if (!token) return res.status(503).json({ error: "REPLICATE_API_TOKEN is missing on the server." });
