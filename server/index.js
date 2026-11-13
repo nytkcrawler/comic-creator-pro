@@ -97,6 +97,34 @@ async function requireAuthenticatedUser(req, res, next) {
   }
 }
 
+function validateGenerationRequest(req, res, next) {
+  const { provider, config = {} } = req.body || {};
+  if (!allowedProviders.has(provider)) return res.status(400).json({ error: "Choose OpenAI, Venice or Replicate." });
+  if (typeof config.scene !== "string" || !config.scene.trim()) {
+    return res.status(400).json({ error: "Describe the comic scene before generating." });
+  }
+  if (!allowedPanels.has(Number(config.panels))) {
+    return res.status(400).json({ error: "Choose a supported panel count." });
+  }
+  if (provider === "openai" && !process.env.OPENAI_API_KEY) {
+    return res.status(503).json({ error: "OpenAI API key is not configured yet. Add OPENAI_API_KEY in Vercel before generating." });
+  }
+  if (provider === "venice" && !process.env.VENICE_API_KEY) {
+    return res.status(503).json({ error: "Venice API key is not configured yet." });
+  }
+  if (provider === "replicate" && !(process.env.REPLICATE_API_TOKEN && process.env.REPLICATE_MODEL_OWNER && process.env.REPLICATE_MODEL_NAME)) {
+    return res.status(503).json({ error: "Replicate API token and model settings are not configured yet." });
+  }
+  next();
+}
+
+function requireOpenAIConfigured(req, res, next) {
+  if (!process.env.OPENAI_API_KEY) {
+    return res.status(503).json({ error: "OpenAI API key is not configured yet. Add OPENAI_API_KEY in Vercel before refining." });
+  }
+  next();
+}
+
 async function enforceGenerationLimit(req, res, next) {
   try {
     const { data, error } = await req.userSupabase.rpc("reserve_generation");
@@ -241,7 +269,7 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
-app.post("/api/generate", requireAuthenticatedUser, enforceGenerationLimit, async (req, res) => {
+app.post("/api/generate", requireAuthenticatedUser, validateGenerationRequest, enforceGenerationLimit, async (req, res) => {
   try {
     const { provider, config = {}, veniceModel, previousResponseId, refinement } = req.body || {};
     if (!allowedProviders.has(provider)) return res.status(400).json({ error: "Choose OpenAI, Venice or Replicate." });
@@ -262,7 +290,7 @@ app.post("/api/generate", requireAuthenticatedUser, enforceGenerationLimit, asyn
 });
 
 
-app.post("/api/refine", requireAuthenticatedUser, enforceGenerationLimit, async (req, res) => {
+app.post("/api/refine", requireAuthenticatedUser, requireOpenAIConfigured, enforceGenerationLimit, async (req, res) => {
   try {
     const { comicId, instruction } = req.body || {};
     if (typeof comicId !== "string" || !comicId.trim()) {
