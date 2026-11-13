@@ -1,6 +1,5 @@
 import "dotenv/config";
 import express from "express";
-import cors from "cors";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -10,13 +9,6 @@ const PORT = Number(process.env.PORT || 8787);
 const allowedPanels = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 12]);
 const allowedProviders = new Set(["venice", "replicate"]);
 
-app.use(cors({
-  origin(origin, callback) {
-    const allowed = process.env.CLIENT_ORIGIN;
-    if (!origin || !allowed || origin === allowed) return callback(null, true);
-    return callback(new Error("Origin is not allowed by Comic Creator Pro."));
-  }
-}));
 app.use(express.json({ limit: "25mb" }));
 
 function clip(value, max) {
