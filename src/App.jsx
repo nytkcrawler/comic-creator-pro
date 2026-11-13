@@ -2,8 +2,10 @@ import React, { useEffect, useMemo, useState } from "react";
 import {
   WandSparkles, Palette, LayoutGrid, Users, ImagePlus, Settings2,
   Download, RefreshCw, BookOpen, ShieldCheck, Plus, Trash2, AlertCircle,
-  LoaderCircle, Heart, ChevronDown, Sparkles
+  LoaderCircle, Heart, ChevronDown, Sparkles, LogOut, Mail
 } from "lucide-react";
+import AuthGate from "./AuthGate";
+import { supabase } from "./lib/supabase";
 
 const styles = [
   "Japanese Manga", "American Superhero Comics", "Korean Webtoon",
@@ -46,8 +48,13 @@ function Select({ value, onChange, items }) {
 
 export default function App() {
   const [config, setConfig] = useState(() => ({ ...defaults, ...load("ccp-config", {}) }));
-  const [provider, setProvider] = useState("venice");
+  const [provider, setProvider] = useState("openai");
   const [veniceModel, setVeniceModel] = useState("z-image-turbo");
+  const [session, setSession] = useState(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [activeComicId, setActiveComicId] = useState(null);
+  const [refinement, setRefinement] = useState("");
+  const [refining, setRefining] = useState(false);
   const [result, setResult] = useState("");
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
@@ -60,18 +67,170 @@ export default function App() {
   const [advanced, setAdvanced] = useState(false);
 
   useEffect(() => { fetch("/api/health").then(r => r.json()).then(setHealth).catch(() => {}); }, []);
+  useEffect(() => {
+    if (!supabase) { setAuthReady(true); return; }
+    let active = true;
+    supabase.auth.getSession().then(({ data }) => {
+      if (active) { setSession(data.session); setAuthReady(true); }
+    }).catch(() => { if (active) setAuthReady(true); });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      setAuthReady(true);
+    });
+    return () => { active = false; subscription.unsubscribe(); };
+  }, []);
   useEffect(() => { localStorage.setItem("ccp-config", JSON.stringify(config)); }, [config]);
   useEffect(() => { localStorage.setItem("ccp-history", JSON.stringify(history.slice(0, 20))); }, [history]);
   useEffect(() => { localStorage.setItem("ccp-characters", JSON.stringify(saved)); }, [saved]);
+
+  async function loadCloudComics() {
+    const { data: comics, error: loadError } = await supabase
+      .from("comics")
+      .select("id,title,story_prompt,style_choice,generation_config,created_at,panels(image_path,page_number,panel_index)")
+      .order("created_at", { ascending: false })
+      .limit(30);
+    if (loadError) throw loadError;
+    const entries = (comics || []).map(comic => ({
+      comic,
+      path: (comic.panels || []).slice().sort((a,b) => (a.page_number - b.page_number) || (a.panel_index - b.panel_index))[0]?.image_path
+    })).filter(entry => entry.path);
+    if (!entries.length) { setHistory([]); return; }
+    const { data: signed, error: signedError } = await supabase.storage
+      .from("comic-panels")
+      .createSignedUrls(entries.map(entry => entry.path), 60 * 60 * 24);
+    if (signedError) throw signedError;
+    const signedByPath = new Map((signed || []).map(item => [item.path, item.signedUrl]));
+    setHistory(entries.map(({ comic, path }) => {
+      const generation = comic.generation_config || {};
+      return {
+        id: comic.id,
+        title: comic.title,
+        image: signedByPath.get(path),
+        config: generation.config || {
+          ...defaults,
+          scene: comic.story_prompt || "",
+          style: comic.style_choice || defaults.style
+        },
+        provider: generation.provider || "venice",
+        responseId: generation.responseId || null
+      };
+    }).filter(item => item.image));
+  }
+
+  async function loadCloudCharacters() {
+    const { data: sets, error: setsError } = await supabase
+      .from("character_sets")
+      .select("id,name,character_ids,created_at")
+      .order("created_at", { ascending: false });
+    if (setsError) throw setsError;
+    const ids = [...new Set((sets || []).flatMap(item => item.character_ids || []))];
+    if (!ids.length) { setSaved([]); return; }
+    const { data: characters, error: charsError } = await supabase
+      .from("characters")
+      .select("id,description,reference_paths")
+      .in("id", ids);
+    if (charsError) throw charsError;
+    const paths = (characters || []).flatMap(char => char.reference_paths || []);
+    const signedResult = paths.length
+      ? await supabase.storage.from("character-refs").createSignedUrls(paths, 60 * 60 * 24)
+      : { data: [], error: null };
+    if (signedResult.error) throw signedResult.error;
+    const signedByPath = new Map((signedResult.data || []).map(item => [item.path, item.signedUrl]));
+    const byId = new Map((characters || []).map(char => {
+      let details = {};
+      try { details = JSON.parse(char.description || "{}"); } catch { details = { characters: char.description || "", outfit: "" }; }
+      return [char.id, {
+        characters: details.characters || "",
+        outfit: details.outfit || "",
+        refs: (char.reference_paths || []).map(path => ({ name: "Saved character reference", url: signedByPath.get(path) })).filter(ref => ref.url)
+      }];
+    }));
+    setSaved((sets || []).map(item => {
+      const first = byId.get(item.character_ids?.[0]) || {};
+      return { id: item.id, characterIds: item.character_ids || [], name: item.name, characters: first.characters || "", outfit: first.outfit || "", refs: first.refs || [] };
+    }));
+  }
+
+  useEffect(() => {
+    if (!session?.user?.id || !supabase) return;
+    let cancelled = false;
+    Promise.all([loadCloudComics(), loadCloudCharacters()]).catch(err => {
+      if (!cancelled) console.warn("Could not load saved Comic Creator Pro data:", err.message);
+    });
+    return () => { cancelled = true; };
+  }, [session?.user?.id]);
+
+  async function saveComicPage(image, pageConfig, pageProvider, responseId = null) {
+    const { data: authData, error: authError } = await supabase.auth.getUser();
+    if (authError || !authData?.user) throw new Error("Sign in again before saving this comic.");
+    const imageResponse = await fetch(image);
+    if (!imageResponse.ok) throw new Error("The generated image could not be downloaded for cloud saving.");
+    const blob = await imageResponse.blob();
+    const contentType = blob.type && blob.type.startsWith("image/") ? blob.type : "image/png";
+    const extension = contentType === "image/jpeg" ? "jpg" : contentType.split("/")[1] || "png";
+    const userId = authData.user.id;
+    const imagePath = userId + "/" + crypto.randomUUID() + "." + extension;
+    const title = (pageConfig.scene || "Untitled comic").split("\n")[0].trim().slice(0, 80) || "Untitled comic";
+
+    const { data: comic, error: comicError } = await supabase.from("comics").insert({
+      user_id: userId,
+      title,
+      story_prompt: pageConfig.scene || "",
+      style_choice: pageConfig.style || defaults.style,
+      num_pages: 1,
+      layout_preset: pageConfig.layout || null,
+      status: "generating",
+      generation_config: { config: pageConfig, provider: pageProvider, responseId }
+    }).select("id").single();
+    if (comicError) throw comicError;
+
+    try {
+      const { error: uploadError } = await supabase.storage.from("comic-panels").upload(imagePath, blob, {
+        contentType,
+        upsert: false
+      });
+      if (uploadError) throw uploadError;
+
+      const { error: panelError } = await supabase.from("panels").insert({
+        comic_id: comic.id,
+        user_id: userId,
+        page_number: 1,
+        panel_index: 1,
+        camera: pageConfig.layout || null,
+        image_prompt: pageConfig.scene || "",
+        image_path: imagePath,
+        bubbles: [],
+        status: "ready"
+      });
+      if (panelError) throw panelError;
+
+      const { error: updateError } = await supabase.from("comics")
+        .update({ status: "complete" }).eq("id", comic.id);
+      if (updateError) throw updateError;
+
+      const { data: signed, error: signedError } = await supabase.storage
+        .from("comic-panels").createSignedUrl(imagePath, 60 * 60 * 24);
+      if (signedError) throw signedError;
+      return { id: comic.id, title, image: signed.signedUrl, config: pageConfig, provider: pageProvider, responseId };
+    } catch (error) {
+      await supabase.storage.from("comic-panels").remove([imagePath]);
+      await supabase.from("comics").delete().eq("id", comic.id);
+      throw error;
+    }
+  }
+
   const set = (key, value) => setConfig(c => ({ ...c, [key]: value }));
   const promptPreview = useMemo(() => config.style + " · " + config.panels + " panels · " + config.genre + " · " + config.layout, [config]);
 
   async function generate() {
-    setBusy(true); setError(""); setResult(""); setStatus("Sending your comic brief…");
+    setBusy(true); setError(""); setResult(""); setActiveComicId(null); setStatus("Sending your comic brief…");
     try {
+      const { data: authData, error: authError } = await supabase.auth.getSession();
+      if (authError || !authData?.session) throw new Error("Please sign in again before generating.");
       const payload = { ...config, referenceImages: refs.map(x => x.url) };
       const response = await fetch("/api/generate", {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + authData.session.access_token },
         body: JSON.stringify({ provider, config: payload, veniceModel })
       });
       const data = await response.json();
@@ -81,7 +240,9 @@ export default function App() {
         let completed = false;
         for (let i = 0; i < 90; i++) {
           await new Promise(resolve => setTimeout(resolve, 2500));
-          const poll = await fetch("/api/replicate/" + data.predictionId);
+          const poll = await fetch("/api/replicate/" + data.predictionId, {
+            headers: { Authorization: "Bearer " + authData.session.access_token }
+          });
           const p = await poll.json();
           if (!poll.ok) throw new Error(p.error || "Could not check generation.");
           if (p.status === "succeeded") { image = p.image; completed = true; break; }
@@ -92,24 +253,119 @@ export default function App() {
       }
       if (!image) throw new Error("The provider completed without returning an image. Check your model output configuration.");
       setResult(image);
-      setStatus(data.blurred ? "Generated. Venice marked the result as blurred." : "Your complete comic page is ready.");
-      setHistory(h => [{ id: Date.now(), image, config: { ...config }, provider }, ...h]);
+      setStatus(data.blurred ? "Generated. Venice marked the result as blurred." : "Your complete comic page is ready. Saving it to your library…");
+      const localItem = { id: Date.now(), image, config: { ...config }, provider, responseId: data.responseId || null };
+      setHistory(h => [localItem, ...h]);
+      try {
+        const savedComic = await saveComicPage(image, { ...config }, provider, data.responseId || null);
+        setActiveComicId(savedComic.id);
+        setHistory(h => [savedComic, ...h.filter(item => item.id !== localItem.id)]);
+        setStatus("Your complete comic page is saved to your account.");
+      } catch (saveError) {
+        setStatus("Comic generated successfully, but cloud saving failed: " + (saveError.message || "Please download a copy."));
+      }
     } catch (e) {
       setError(e.message || "Something went wrong.");
       setStatus("");
     } finally { setBusy(false); }
   }
 
-  function saveCharacter() {
+  async function saveCharacter() {
     if (!characterName.trim()) return;
-    setSaved(c => [{ id: Date.now(), name: characterName.trim(), characters: config.characters, outfit: config.outfit }, ...c]);
-    setCharacterName("");
+    const { data: authData, error: authError } = await supabase.auth.getUser();
+    if (authError || !authData?.user) { setError("Please sign in again before saving a character set."); return; }
+    const userId = authData.user.id;
+    const referencePaths = [];
+    try {
+      for (const ref of refs) {
+        const response = await fetch(ref.url);
+        const blob = await response.blob();
+        const ext = blob.type === "image/jpeg" ? "jpg" : (blob.type.split("/")[1] || "png");
+        const path = userId + "/" + crypto.randomUUID() + "." + ext;
+        const { error: uploadError } = await supabase.storage.from("character-refs").upload(path, blob, {
+          contentType: blob.type || "image/png",
+          upsert: false
+        });
+        if (uploadError) throw uploadError;
+        referencePaths.push(path);
+      }
+      const { data: character, error: characterError } = await supabase.from("characters").insert({
+        user_id: userId,
+        name: characterName.trim(),
+        description: JSON.stringify({ characters: config.characters, outfit: config.outfit }),
+        reference_paths: referencePaths
+      }).select("id").single();
+      if (characterError) throw characterError;
+      const { data: characterSet, error: setError } = await supabase.from("character_sets").insert({
+        user_id: userId,
+        name: characterName.trim(),
+        character_ids: [character.id]
+      }).select("id").single();
+      if (setError) {
+        await supabase.from("characters").delete().eq("id", character.id);
+        throw setError;
+      }
+      setSaved(c => [{ id: characterSet.id, characterIds: [character.id], name: characterName.trim(), characters: config.characters, outfit: config.outfit, refs: refs.map(ref => ({...ref})) }, ...c]);
+      setCharacterName("");
+      setStatus("Character setup saved to your account.");
+    } catch (err) {
+      setError(err.message || "Could not save the character setup.");
+    }
   }
-  function useCharacter(c) { set("characters", c.characters); set("outfit", c.outfit); }
+  function useCharacter(c) {
+    set("characters", c.characters);
+    set("outfit", c.outfit);
+    setRefs(c.refs || []);
+  }
+  async function deleteCharacterSet(c) {
+    try {
+      const { error: setError } = await supabase.from("character_sets").delete().eq("id", c.id);
+      if (setError) throw setError;
+      for (const characterId of c.characterIds || []) {
+        const { error: charError } = await supabase.from("characters").delete().eq("id", characterId);
+        if (charError) throw charError;
+      }
+      setSaved(items => items.filter(item => item.id !== c.id));
+    } catch (err) {
+      setError(err.message || "Could not delete this character setup.");
+    }
+  }
+
+  async function refineComic() {
+    if (!activeComicId || !refinement.trim()) return;
+    setRefining(true); setError(""); setStatus("Refining your comic page with OpenAI…");
+    try {
+      const { data: authData, error: authError } = await supabase.auth.getSession();
+      if (authError || !authData?.session) throw new Error("Please sign in again before refining.");
+      const response = await fetch("/api/refine", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + authData.session.access_token },
+        body: JSON.stringify({ comicId: activeComicId, instruction: refinement })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not refine this comic.");
+      const refinedConfig = { ...config, scene: config.scene + "\nRefinement: " + refinement };
+      setResult(data.image);
+      const savedComic = await saveComicPage(data.image, refinedConfig, "openai", data.responseId || null);
+      setActiveComicId(savedComic.id);
+      setHistory(h => [savedComic, ...h]);
+      setRefinement("");
+      setStatus("Refined page saved as a new version in your library.");
+    } catch (err) {
+      setError(err.message || "Comic refinement failed.");
+      setStatus("");
+    } finally {
+      setRefining(false);
+    }
+  }
   function downloadImage(src, name = "comic-creator-pro.png") {
     const a = document.createElement("a"); a.href = src; a.download = name; a.target = "_blank"; a.click();
   }
   function newComic() { setConfig(c => ({ ...c, scene: "", ending: "Romantic Payoff" })); setResult(""); setStatus(""); setError(""); window.scrollTo({ top: 0, behavior: "smooth" }); }
+
+  if (!authReady) return <main className="auth-shell"><section className="auth-card"><h1>Opening your private studio…</h1><p>Checking your secure sign-in.</p></section></main>;
+  if (!supabase) return <main className="auth-shell"><section className="auth-card"><h1>Studio setup needed</h1><p>Supabase connection settings are missing. Add the VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY environment variables in Vercel.</p></section></main>;
+  if (!session) return <AuthGate />;
 
   return <div className="app-shell">
     <aside className="sidebar">
@@ -123,7 +379,13 @@ export default function App() {
 
     <main className="main">
       <header className="topbar"><div className="crumb">Workspace <span>/</span> <b>Comic Studio</b></div>
-        <div className="top-actions"><span className={"provider-status " + (health.venice ? "online" : "")}>● Venice {health.venice ? "connected" : "not configured"}</span><span className={"provider-status " + (health.replicate ? "online" : "")}>● Replicate {health.replicate ? "connected" : "not configured"}</span></div>
+        <div className="top-actions">
+          <span className={"provider-status " + (health.openai ? "online" : "")}>● OpenAI {health.openai ? "connected" : "needs API key"}</span>
+          <span className={"provider-status " + (health.venice ? "online" : "")}>● Venice {health.venice ? "connected" : "not configured"}</span>
+          <span className={"provider-status " + (health.replicate ? "online" : "")}>● Replicate {health.replicate ? "connected" : "not configured"}</span>
+          <span className="provider-status">{session?.user?.email}</span>
+          <button className="icon-button" title="Sign out" onClick={() => supabase.auth.signOut()}><LogOut size={15}/></button>
+        </div>
       </header>
 
       <section className="hero"><div><div className="eyebrow"><Sparkles size={13}/> YOUR CREATIVE UNIVERSE</div><h1>Bring your stories<br/><em>to life.</em></h1><p>Design cinematic comic pages with your favorite art styles, characters and AI models.</p></div><div className="hero-art"><div className="hero-orbit orbit-one"/><div className="hero-orbit orbit-two"/><div className="hero-stamp">PANEL<br/>TO<br/>PANEL</div><div className="hero-spark">✦</div></div></section>
@@ -159,7 +421,7 @@ export default function App() {
               {refs.length > 0 && <small>{refs.length} reference file(s) ready</small>}
             </div>
             <div id="characters" className="character-save"><input placeholder="Character set name" value={characterName} onChange={e => setCharacterName(e.target.value)}/><button className="outline-btn" onClick={saveCharacter}><Plus size={15}/> Save character setup</button></div>
-            {saved.length > 0 && <div className="saved-list">{saved.map(c => <div className="saved-item" key={c.id}><button onClick={() => useCharacter(c)}>{c.name}</button><button className="icon-button" onClick={() => setSaved(s => s.filter(x => x.id !== c.id))}><Trash2 size={14}/></button></div>)}</div>}
+            {saved.length > 0 && <div className="saved-list">{saved.map(c => <div className="saved-item" key={c.id}><button onClick={() => useCharacter(c)}>{c.name}</button><button className="icon-button" onClick={() => deleteCharacterSet(c)}><Trash2 size={14}/></button></div>)}</div>}
           </div>
 
           <div className="panel-card">
@@ -174,9 +436,11 @@ export default function App() {
           <div className="panel-card provider-card">
             <div className="card-heading"><span className="icon-tile"><Settings2 size={18}/></span><div><h3>AI generation engine</h3><p>Choose which connected provider renders your page.</p></div></div>
             <div className="provider-options">
+              <button className={provider === "openai" ? "provider-option selected" : "provider-option"} onClick={() => setProvider("openai")}><b>OpenAI GPT Image</b><small>Conversational image generation and edits</small><span>{health.openai ? "Connected" : "Needs API key"}</span></button>
               <button className={provider === "venice" ? "provider-option selected" : "provider-option"} onClick={() => setProvider("venice")}><b>Venice AI</b><small>Image generation API</small><span>{health.venice ? "Connected" : "Needs API key"}</span></button>
               <button className={provider === "replicate" ? "provider-option selected" : "provider-option"} onClick={() => setProvider("replicate")}><b>Replicate</b><small>Configurable model endpoint</small><span>{health.replicate ? "Connected" : "Needs API key + model"}</span></button>
             </div>
+            {provider === "openai" && <div className="provider-note"><Sparkles size={16}/> OpenAI uses the Responses API with image references and multi-turn refinement. One request returns one complete comic page.</div>}
             {provider === "venice" && <Field label="VENICE MODEL"><input value={veniceModel} onChange={e => setVeniceModel(e.target.value)} title="Set VENICE_IMAGE_MODEL in server .env"/></Field>}
             <div className="provider-note"><ShieldCheck size={16}/> Provider credentials stay on your server. Model availability and content rules are controlled by each provider.</div>
             <button className="advanced-toggle" onClick={() => setAdvanced(v => !v)}><Settings2 size={15}/> Advanced content settings <ChevronDown size={15}/></button>
@@ -203,13 +467,18 @@ export default function App() {
         </aside>
       </section>
 
-      {(busy || error || result) && <section className="result-section"><div className="section-heading"><div><span className="step">02</span><div><h2>Comic output</h2><p>{status || "Your generated page."}</p></div></div></div>
+      {(busy || refining || error || result) && <section className="result-section"><div className="section-heading"><div><span className="step">02</span><div><h2>Comic output</h2><p>{status || "Your generated page."}</p></div></div></div>
         {error && <div className="error-box"><AlertCircle size={17}/>{error}</div>}
-        {result && <div className="result-card"><img src={result} alt="Generated complete comic page"/><div className="result-actions"><button className="outline-btn" onClick={() => downloadImage(result)}><Download size={16}/> Download comic</button><button className="outline-btn" onClick={generate}><RefreshCw size={16}/> Regenerate</button><button className="primary-small" onClick={newComic}><Plus size={16}/> New comic</button></div></div>}
+        {result && <div className="result-card"><img src={result} alt="Generated complete comic page"/><div className="result-actions"><button className="outline-btn" onClick={() => downloadImage(result)}><Download size={16}/> Download comic</button><button className="outline-btn" onClick={generate} disabled={busy || refining}><RefreshCw size={16}/> Regenerate</button><button className="primary-small" onClick={newComic}><Plus size={16}/> New comic</button></div></div>}
+        {result && provider === "openai" && activeComicId && <div className="panel-card refine-card">
+          <div className="card-heading"><span className="icon-tile"><Sparkles size={18}/></span><div><h3>Refine this comic</h3><p>Describe a change in plain language. OpenAI will continue from the saved image-generation conversation.</p></div></div>
+          <Field label="WHAT SHOULD CHANGE?"><textarea rows="3" value={refinement} onChange={e => setRefinement(e.target.value)} placeholder="For example: keep the same characters, but make the rain heavier and shift the final panel to a dramatic close-up…"/></Field>
+          <button className="generate-btn" disabled={refining || !refinement.trim()} onClick={refineComic}>{refining ? <><LoaderCircle className="spin" size={18}/> Refining…</> : <><Sparkles size={18}/> Refine with OpenAI</>}</button>
+        </div>}
       </section>}
 
       <section id="gallery" className="gallery-section"><div className="section-heading"><div><span className="step">03</span><div><h2>Recent creations</h2><p>Your latest generated comic pages on this device.</p></div></div></div>
-        {history.length === 0 ? <div className="empty-gallery"><ImagePlus size={24}/><b>Your gallery is waiting</b><span>Generated comics will appear here.</span></div> : <div className="history-grid">{history.map(item => <button className="history-thumb" key={item.id} onClick={() => { setResult(item.image); setConfig(item.config); setProvider(item.provider); window.scrollTo({ top: 0, behavior: "smooth" }); }}><img src={item.image} alt="Past comic"/><span>{item.config.style} · {item.config.panels} panels</span></button>)}</div>}
+        {history.length === 0 ? <div className="empty-gallery"><ImagePlus size={24}/><b>Your gallery is waiting</b><span>Generated comics will appear here.</span></div> : <div className="history-grid">{history.map(item => <button className="history-thumb" key={item.id} onClick={() => { setResult(item.image); setConfig(item.config); setProvider(item.provider); setActiveComicId(item.id); setRefinement(""); window.scrollTo({ top: 0, behavior: "smooth" }); }}><img src={item.image} alt="Past comic"/><span>{item.config.style} · {item.config.panels} panels</span></button>)}</div>}
       </section>
       <footer>COMIC CREATOR PRO <span>Made for storytellers.</span></footer>
     </main>
