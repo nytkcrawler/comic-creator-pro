@@ -330,4 +330,8 @@ app.get("*", (req, res, next) => {
   res.sendFile(path.join(distDir, "index.html"), error => error && next(error));
 });
 
-app.listen(PORT, () => console.log("Comic Creator Pro server listening on port " + PORT));
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => console.log("Comic Creator Pro server listening on port " + PORT));
+}
+
+export default app;
