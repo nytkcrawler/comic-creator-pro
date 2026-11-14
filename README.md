@@ -1,51 +1,44 @@
 # Comic Creator Pro
 
-A mobile-first React + Express comic creation studio with Venice and Replicate provider adapters.
-
-## Requirements
-- Node.js 20+
-- A Venice API key and/or Replicate API token
-- A Replicate model whose input schema accepts `prompt` and `num_outputs`
+A React/Vite and Express comic studio with Supabase passwordless authentication, private cloud storage, account-based generation limits, and OpenAI, Venice and Replicate image providers.
 
 ## Run locally
-1. Extract the project.
+1. Use Node.js 26.x.
 2. Run `npm install`.
 3. Copy `.env.example` to `.env`.
-4. Add provider credentials to `.env`.
-5. Run `npm run dev`.
-6. Open http://localhost:5173.
+4. Add the required Supabase and provider settings.
+5. Run `npm run dev` and open http://localhost:5173.
 
-For production:
-- `npm run build`
-- `npm start`
-- Deploy the Node server and built `dist` folder together.
-- Set environment variables in your hosting provider's secret manager.
+## Supabase
+- Users sign in with an email magic link through Supabase Auth.
+- Comics are stored in `public.comics`; each complete generated page is one row in `public.comic_pages`.
+- Page image files are stored privately in `comic-panels`; character references are stored privately in `character-refs`.
+- Each user’s data is protected by row-level security. Server requests validate the current user's JWT and perform database operations with that identity.
+- The browser uses only the Supabase publishable key. No service-role or secret key is used by this app.
+- The database limits each signed-in user to 10 page-generation requests per hour.
 
-## Provider setup
+In Supabase Dashboard → Authentication → URL Configuration, set the Site URL to your Vercel app and add:
+- `http://localhost:5173/**`
+- `https://comic-creator-pro-nytkcrawler-3581.vercel.app/**`
 
-### Venice
-Set:
-- `VENICE_API_KEY`
-- `VENICE_IMAGE_MODEL` (default: `z-image-turbo`)
-- `VENICE_MODERATION=auto` or `low`
+## Image generation
+Every Generate action requests **one complete page image**. The requested panel count is composed inside that one image:
+- OpenAI: one Responses API request with image generation forced on and parallel tool calls disabled; the app accepts exactly one image result.
+- Venice: `n: 1`.
+- Replicate: one prediction with `num_outputs: 1`.
 
-Venice documents `moderation=low` as returning adult-classified images without blur. It is not a guarantee of unrestricted generation or a bypass of Venice's policies. Keep `auto` if you prefer automatic blur.
+The app does not call the image API once per panel and does not split a generated page into separate panel image records. It stores one image and one `comic_pages` row per page. Exact panel geometry and text rendering still depend on the selected image model.
 
-### Replicate
-Set:
-- `REPLICATE_API_TOKEN`
-- `REPLICATE_MODEL_OWNER`
-- `REPLICATE_MODEL_NAME`
+## Provider configuration
+At least one server-side key is required:
+- OpenAI: `OPENAI_API_KEY`, optional `OPENAI_RESPONSE_MODEL=gpt-5.5`.
+- Venice: `VENICE_API_KEY`, optional `VENICE_IMAGE_MODEL` and `VENICE_MODERATION`.
+- Replicate: `REPLICATE_API_TOKEN`, `REPLICATE_MODEL_OWNER`, `REPLICATE_MODEL_NAME`, plus optional model-specific inputs.
 
-The adapter sends exactly one prediction for the entire page and sets `num_outputs: 1`. It does not issue one prediction per panel. Choose a Replicate model whose input schema supports both `prompt` and `num_outputs`. Replicate models have different input schemas. Add model-specific fields in `REPLICATE_EXTRA_INPUT_JSON`, for example:
-`{"aspect_ratio":"2:3","output_format":"png"}`
+OpenAI API usage is billed separately from ChatGPT subscriptions. Venice and Replicate usage is charged by those providers. Never paste provider keys into GitHub or browser environment variables; set them as encrypted Vercel server environment variables.
 
-If your chosen model requires a pinned version, set `REPLICATE_MODEL_VERSION` to the full version hash. If the model supports image references, set `REPLICATE_REFERENCE_INPUT_KEY` to the exact input field name it expects. The UI's file picker is a placeholder; production reference-image support requires uploading files to private object storage and passing signed HTTPS URLs to a model that accepts them.
-
-## Notes / production hardening
-- API keys are server-side only. Never rename them with a `VITE_` prefix.
-- Add authentication, per-user quotas, rate limiting, persistent storage and image cleanup before public deployment.
-- The app stores configuration, saved character text and recent generated images in the browser's localStorage. Do not use this for sensitive material on shared devices.
-- **Single-page generation is a core invariant:** one click sends one generation request, and that request asks the image model to render the complete page with all requested panels in one image. Venice is called with `n: 1`; Replicate receives one prediction with `num_outputs: 1`. Replicate status checks only poll the same prediction and do not generate additional images. There is deliberately no per-panel generation pipeline. Exact panel count, panel borders and legible lettering still depend on the selected model following the prompt.
-- Only use provider models and content settings permitted by their terms. The adult-mode checkbox is an age-gated creative setting, not a way to bypass provider safeguards. All depicted characters must be adults. Never create sexual content involving minors, age-ambiguous characters, coercion or non-consensual exploitation.
-- Before accepting uploads from users, add file type/size validation, malware scanning, access controls and signed upload URLs.
+## Security
+- All depicted characters must be clearly adults.
+- Adult settings do not bypass provider safeguards.
+- Private image links are time-limited signed URLs.
+- Beta generation quota is 10 pages per user per hour.
