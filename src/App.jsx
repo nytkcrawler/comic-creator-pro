@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { supabase, supabaseConfigured } from "./supabaseClient";
 import {
   WandSparkles, Palette, LayoutGrid, Users, ImagePlus, Settings2,
   Download, RefreshCw, BookOpen, ShieldCheck, Plus, Trash2, AlertCircle,
@@ -58,15 +59,203 @@ export default function App() {
   const [saved, setSaved] = useState(() => load("ccp-characters", []));
   const [characterName, setCharacterName] = useState("");
   const [advanced, setAdvanced] = useState(false);
+  const [authReady, setAuthReady] = useState(!supabaseConfigured);
+  const [authUser, setAuthUser] = useState(null);
+  const [authEmail, setAuthEmail] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authNotice, setAuthNotice] = useState("");
+  const [persistenceReady, setPersistenceReady] = useState(false);
+  const [persistenceError, setPersistenceError] = useState("");
 
   useEffect(() => { fetch("/api/health").then(r => r.json()).then(setHealth).catch(() => {}); }, []);
   useEffect(() => { localStorage.setItem("ccp-config", JSON.stringify(config)); }, [config]);
-  useEffect(() => { localStorage.setItem("ccp-history", JSON.stringify(history.slice(0, 20))); }, [history]);
-  useEffect(() => { localStorage.setItem("ccp-characters", JSON.stringify(saved)); }, [saved]);
+  useEffect(() => {
+    if (!supabaseConfigured) localStorage.setItem("ccp-history", JSON.stringify(history.filter(x => !String(x.image || "").startsWith("data:")).slice(0, 20)));
+  }, [history]);
+  useEffect(() => {
+    if (!supabaseConfigured) localStorage.setItem("ccp-characters", JSON.stringify(saved));
+  }, [saved]);
+
+  useEffect(() => {
+    if (!supabase) return;
+    let active = true;
+    supabase.auth.getUser().then(({ data, error }) => {
+      if (!active) return;
+      setAuthUser(data?.user || null);
+      setAuthReady(true);
+      if (error) setAuthNotice(error.message);
+    }).catch(error => {
+      if (active) { setAuthReady(true); setAuthNotice(error.message || "Could not check your sign-in."); }
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setAuthUser(session?.user || null);
+      setAuthReady(true);
+      setAuthNotice("");
+    });
+    return () => { active = false; subscription.unsubscribe(); };
+  }, []);
   const set = (key, value) => setConfig(c => ({ ...c, [key]: value }));
   const promptPreview = useMemo(() => config.style + " · " + config.panels + " panels · " + config.genre + " · " + config.layout, [config]);
 
-  async function generate() {
+  async function requestMagicLink(event) {
+    event.preventDefault();
+    if (!supabase) return;
+    setAuthBusy(true); setAuthNotice("");
+    try {
+      const { error } = await supabase.auth.signInWithOtp({
+        email: authEmail.trim(),
+        options: { emailRedirectTo: window.location.origin }
+      });
+      if (error) throw error;
+      setAuthNotice("Magic link sent. Check your email, then open the link on this device.");
+    } catch (error) {
+      setAuthNotice(error.message || "Could not send the sign-in email.");
+    } finally { setAuthBusy(false); }
+  }
+
+  async function signOut() {
+    if (!supabase) return;
+    const { error } = await supabase.auth.signOut();
+    if (error) setAuthNotice(error.message);
+    setHistory([]); setSaved([]); setResult("");
+  }
+
+  async function loadSavedLibrary(user) {
+    if (!supabase || !user) return;
+    setPersistenceReady(false); setPersistenceError("");
+    try {
+      const { data: comics, error: comicError } = await supabase
+        .from("comics")
+        .select("id,title,story_prompt,style_choice,generation_config,created_at,status")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false })
+        .limit(30);
+      if (comicError) throw comicError;
+
+      let pageRows = [];
+      const comicIds = (comics || []).map(c => c.id);
+      if (comicIds.length) {
+        const { data, error } = await supabase
+          .from("comic_pages")
+          .select("comic_id,image_path,provider_id,page_number")
+          .eq("user_id", user.id)
+          .in("comic_id", comicIds)
+          .order("page_number", { ascending: true });
+        if (error) throw error;
+        pageRows = data || [];
+      }
+      const pageByComic = new Map(pageRows.map(p => [p.comic_id, p]));
+      const restored = [];
+      for (const comic of comics || []) {
+        const page = pageByComic.get(comic.id);
+        if (!page) continue;
+        const { data: signed, error } = await supabase.storage
+          .from("comic-panels")
+          .createSignedUrl(page.image_path, 60 * 60 * 6);
+        if (error) throw error;
+        const generationConfig = comic.generation_config || {};
+        restored.push({
+          id: comic.id, comicId: comic.id, image: signed.signedUrl,
+          config: { ...defaults, ...generationConfig },
+          provider: generationConfig.provider || page.provider_id,
+          title: comic.title || "Comic page", imagePath: page.image_path
+        });
+      }
+      setHistory(restored);
+
+      const { data: sets, error: setError } = await supabase
+        .from("character_sets")
+        .select("id,name,character_ids,created_at")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false });
+      if (setError) throw setError;
+      const characterIds = [...new Set((sets || []).flatMap(row => row.character_ids || []))];
+      let characters = [];
+      if (characterIds.length) {
+        const { data, error } = await supabase
+          .from("characters")
+          .select("id,name,description,reference_paths")
+          .eq("user_id", user.id)
+          .in("id", characterIds);
+        if (error) throw error;
+        characters = data || [];
+      }
+      const characterById = new Map(characters.map(c => [c.id, c]));
+      const loadedSets = [];
+      for (const row of sets || []) {
+        const character = (row.character_ids || []).map(id => characterById.get(id)).find(Boolean);
+        if (!character) continue;
+        let description = {};
+        try { description = JSON.parse(character.description || "{}"); } catch { description = { characters: character.description || "" }; }
+        const references = [];
+        for (const path of character.reference_paths || []) {
+          const { data, error } = await supabase.storage.from("character-refs").createSignedUrl(path, 60 * 60 * 24);
+          if (!error && data?.signedUrl) references.push({ name: path.split("/").pop(), url: data.signedUrl, storagePath: path });
+        }
+        loadedSets.push({
+          id: row.id, name: row.name, characterIds: row.character_ids || [],
+          characters: description.characters || "", outfit: description.outfit || "", references
+        });
+      }
+      setSaved(loadedSets);
+    } catch (error) {
+      setPersistenceError(error.message || "Could not load your saved library.");
+    } finally { setPersistenceReady(true); }
+  }
+
+  useEffect(() => {
+    if (supabaseConfigured && authUser) loadSavedLibrary(authUser);
+    if (supabaseConfigured && !authUser && authReady) {
+      setHistory([]); setSaved([]); setPersistenceReady(true);
+    }
+  }, [authUser, authReady]);
+
+  async function saveGeneratedPage(imageUrl, currentConfig, currentProvider) {
+    if (!supabase || !authUser) return null;
+    const response = await fetch(imageUrl);
+    if (!response.ok) throw new Error("Could not download the generated image for private storage.");
+    const imageBlob = await response.blob();
+    const extension = imageBlob.type.includes("jpeg") ? "jpg" : "png";
+    const comicId = crypto.randomUUID();
+    const imagePath = authUser.id + "/" + comicId + "/page-1." + extension;
+    const { error: uploadError } = await supabase.storage
+      .from("comic-panels")
+      .upload(imagePath, imageBlob, { contentType: imageBlob.type || "image/png", upsert: false });
+    if (uploadError) throw uploadError;
+
+    const title = (currentConfig.scene || "Untitled comic").trim().split(/[.!?\n]/)[0].slice(0, 90) || "Untitled comic";
+    const generationConfig = {
+      ...currentConfig, provider: currentProvider, generation_mode: "single-full-page",
+      page_image_count: 1, panel_count: Number(currentConfig.panels), page_count: 1
+    };
+    const { data: comic, error: comicError } = await supabase.from("comics").insert({
+      id: comicId, user_id: authUser.id, title, story_prompt: currentConfig.scene,
+      style_choice: currentConfig.style, num_pages: 1, layout_preset: currentConfig.layout,
+      status: "complete", generation_config: generationConfig
+    }).select("id").single();
+    if (comicError) {
+      await supabase.storage.from("comic-panels").remove([imagePath]);
+      throw comicError;
+    }
+    const { error: pageError } = await supabase.from("comic_pages").insert({
+      comic_id: comic.id, user_id: authUser.id, page_number: 1, image_path: imagePath,
+      provider_id: currentProvider, prompt: currentConfig.scene, generation_config: generationConfig
+    });
+    if (pageError) {
+      await supabase.from("comics").delete().eq("id", comic.id);
+      await supabase.storage.from("comic-panels").remove([imagePath]);
+      throw pageError;
+    }
+    const { data: signed, error: signError } = await supabase.storage
+      .from("comic-panels").createSignedUrl(imagePath, 60 * 60 * 6);
+    if (signError) throw signError;
+    return {
+      id: comic.id, comicId: comic.id, image: signed.signedUrl,
+      imagePath, config: generationConfig, provider: currentProvider, title
+    };
+  }
+
+  async function saveCharacter() {
     setBusy(true); setError(""); setResult(""); setStatus("Sending your comic brief…");
     try {
       const payload = { ...config, referenceImages: refs.map(x => x.url) };
@@ -93,7 +282,20 @@ export default function App() {
       if (!image) throw new Error("The provider completed without returning an image. Check your model output configuration.");
       setResult(image);
       setStatus(data.blurred ? "Generated. Venice marked the result as blurred." : "Your complete comic page is ready.");
-      setHistory(h => [{ id: Date.now(), image, config: { ...config }, provider }, ...h]);
+      if (supabase && authUser) {
+        try {
+          const savedPage = await saveGeneratedPage(image, { ...config }, provider);
+          setResult(savedPage.image);
+          setHistory(h => [savedPage, ...h.filter(x => x.id !== savedPage.id)].slice(0, 30));
+          setStatus("Your complete comic page is saved in your private library.");
+        } catch (saveError) {
+          setPersistenceError("The image was generated, but could not be saved to your private library: " + saveError.message);
+          setHistory(h => [{ id: Date.now(), image, config: { ...config }, provider }, ...h].slice(0, 8));
+        }
+      } else {
+        setHistory(h => [{ id: Date.now(), image, config: { ...config }, provider }, ...h].slice(0, 8));
+        setStatus("Generated in this session. Sign in with Supabase to save pages across devices.");
+      }
     } catch (e) {
       setError(e.message || "Something went wrong.");
       setStatus("");
@@ -102,10 +304,67 @@ export default function App() {
 
   function saveCharacter() {
     if (!characterName.trim()) return;
-    setSaved(c => [{ id: Date.now(), name: characterName.trim(), characters: config.characters, outfit: config.outfit }, ...c]);
+    if (supabase && authUser) {
+      setPersistenceError("");
+      try {
+        const referencePaths = refs.map(r => r.storagePath).filter(Boolean);
+        const { data: character, error: characterError } = await supabase.from("characters").insert({
+          user_id: authUser.id, name: characterName.trim(),
+          description: JSON.stringify({ characters: config.characters, outfit: config.outfit }),
+          reference_paths: referencePaths
+        }).select("id").single();
+        if (characterError) throw characterError;
+        const { data: setRow, error: setError } = await supabase.from("character_sets").insert({
+          user_id: authUser.id, name: characterName.trim(), character_ids: [character.id]
+        }).select("id").single();
+        if (setError) {
+          await supabase.from("characters").delete().eq("id", character.id);
+          throw setError;
+        }
+        setSaved(c => [{ id: setRow.id, name: characterName.trim(), characterIds: [character.id], characters: config.characters, outfit: config.outfit, references: [...refs] }, ...c]);
+        setCharacterName("");
+      } catch (error) { setPersistenceError(error.message || "Could not save character setup."); }
+      return;
+    }
+    setSaved(c => [{ id: Date.now(), name: characterName.trim(), characters: config.characters, outfit: config.outfit, references: [...refs] }, ...c]);
     setCharacterName("");
   }
-  function useCharacter(c) { set("characters", c.characters); set("outfit", c.outfit); }
+  async function deleteCharacterSet(c) {
+    if (supabase && authUser && c.characterIds?.length) {
+      const { error: setError } = await supabase.from("character_sets").delete().eq("id", c.id).eq("user_id", authUser.id);
+      if (setError) { setPersistenceError(setError.message); return; }
+      const { error: charError } = await supabase.from("characters").delete().in("id", c.characterIds).eq("user_id", authUser.id);
+      if (charError) { setPersistenceError(charError.message); return; }
+      const paths = (c.references || []).map(r => r.storagePath).filter(Boolean);
+      if (paths.length) await supabase.storage.from("character-refs").remove(paths);
+    }
+    setSaved(s => s.filter(x => x.id !== c.id));
+  }
+  function useCharacter(c) {
+    set("characters", c.characters); set("outfit", c.outfit); setRefs(c.references || []);
+  }
+  async function handleReferenceFiles(fileList) {
+    const files = Array.from(fileList || []);
+    for (const file of files) {
+      if (!file.type.startsWith("image/")) continue;
+      if (file.size > 12 * 1024 * 1024) { setPersistenceError("Each reference image must be 12 MB or smaller."); continue; }
+      if (supabase && authUser) {
+        try {
+          const ext = (file.name.split(".").pop() || "png").replace(/[^a-z0-9]/gi, "").toLowerCase() || "png";
+          const storagePath = authUser.id + "/refs/" + crypto.randomUUID() + "." + ext;
+          const { error } = await supabase.storage.from("character-refs").upload(storagePath, file, { contentType: file.type, upsert: false });
+          if (error) throw error;
+          const { data, error: signError } = await supabase.storage.from("character-refs").createSignedUrl(storagePath, 60 * 60 * 24);
+          if (signError) throw signError;
+          setRefs(old => [...old, { name: file.name, url: data.signedUrl, storagePath }]);
+        } catch (error) { setPersistenceError(error.message || "Reference upload failed."); }
+      } else {
+        const reader = new FileReader();
+        reader.onload = () => setRefs(old => [...old, { name: file.name, url: String(reader.result) }]);
+        reader.readAsDataURL(file);
+      }
+    }
+  }
   function downloadImage(src, name = "comic-creator-pro.png") {
     const a = document.createElement("a"); a.href = src; a.download = name; a.target = "_blank"; a.click();
   }
@@ -123,9 +382,11 @@ export default function App() {
 
     <main className="main">
       <header className="topbar"><div className="crumb">Workspace <span>/</span> <b>Comic Studio</b></div>
-        <div className="top-actions"><span className={"provider-status " + (health.venice ? "online" : "")}>● Venice {health.venice ? "connected" : "not configured"}</span><span className={"provider-status " + (health.replicate ? "online" : "")}>● Replicate {health.replicate ? "connected" : "not configured"}</span></div>
+        <div className="top-actions"><span className={"provider-status " + (health.venice ? "online" : "")}>● Venice {health.venice ? "connected" : "not configured"}</span><span className={"provider-status " + (health.replicate ? "online" : "")}>● Replicate {health.replicate ? "connected" : "not configured"}</span>{supabaseConfigured && authUser && <><span className="provider-status online">● {authUser.email}</span><button className="auth-signout" onClick={signOut}>Sign out</button></>}{!supabaseConfigured && <span className="provider-status">Local mode</span>}</div>
       </header>
 
+      {persistenceError && <div className="persistence-alert"><AlertCircle size={15}/>{persistenceError}<button onClick={() => setPersistenceError("")}>Dismiss</button></div>}
+      {supabaseConfigured && persistenceReady && authUser && <div className="persistence-banner"><ShieldCheck size={15}/> Private cloud library connected. Comics and character sets are saved to your Supabase account.</div>}
       <section className="hero"><div><div className="eyebrow"><Sparkles size={13}/> YOUR CREATIVE UNIVERSE</div><h1>Bring your stories<br/><em>to life.</em></h1><p>Design cinematic comic pages with your favorite art styles, characters and AI models.</p></div><div className="hero-art"><div className="hero-orbit orbit-one"/><div className="hero-orbit orbit-two"/><div className="hero-stamp">PANEL<br/>TO<br/>PANEL</div><div className="hero-spark">✦</div></div></section>
 
       <div className="section-heading"><div><span className="step">01</span><div><h2>Comic configuration</h2><p>Shape every detail of your next comic page.</p></div></div><span className="autosave">✓ Auto-saved</span></div>
@@ -155,11 +416,11 @@ export default function App() {
             <Field label="CHARACTER IDENTITY & REFERENCES"><textarea rows="3" value={config.characters} onChange={e => set("characters", e.target.value)}/></Field>
             <Field label="OUTFIT CONTINUITY"><input value={config.outfit} onChange={e => set("outfit", e.target.value)}/></Field>
             <div className="reference-drop"><ImagePlus size={20}/><div><b>Character reference images</b><small>Upload identity references. Replicate references are sent only when the selected model is configured to accept them.</small></div>
-              <input type="file" accept="image/*" multiple onChange={e => Array.from(e.target.files || []).forEach(file => { const reader = new FileReader(); reader.onload = () => setRefs(old => [...old, { name: file.name, url: String(reader.result) }]); reader.readAsDataURL(file); })}/>
+              <input type="file" accept="image/*" multiple onChange={e => { handleReferenceFiles(e.target.files); e.target.value = ""; }}/>
               {refs.length > 0 && <small>{refs.length} reference file(s) ready</small>}
             </div>
             <div id="characters" className="character-save"><input placeholder="Character set name" value={characterName} onChange={e => setCharacterName(e.target.value)}/><button className="outline-btn" onClick={saveCharacter}><Plus size={15}/> Save character setup</button></div>
-            {saved.length > 0 && <div className="saved-list">{saved.map(c => <div className="saved-item" key={c.id}><button onClick={() => useCharacter(c)}>{c.name}</button><button className="icon-button" onClick={() => setSaved(s => s.filter(x => x.id !== c.id))}><Trash2 size={14}/></button></div>)}</div>}
+            {saved.length > 0 && <div className="saved-list">{saved.map(c => <div className="saved-item" key={c.id}><button onClick={() => useCharacter(c)}>{c.name}</button><button className="icon-button" onClick={() => deleteCharacterSet(c)}><Trash2 size={14}/></button></div>)}</div>}
           </div>
 
           <div className="panel-card">
@@ -208,10 +469,11 @@ export default function App() {
         {result && <div className="result-card"><img src={result} alt="Generated complete comic page"/><div className="result-actions"><button className="outline-btn" onClick={() => downloadImage(result)}><Download size={16}/> Download comic</button><button className="outline-btn" onClick={generate}><RefreshCw size={16}/> Regenerate</button><button className="primary-small" onClick={newComic}><Plus size={16}/> New comic</button></div></div>}
       </section>}
 
-      <section id="gallery" className="gallery-section"><div className="section-heading"><div><span className="step">03</span><div><h2>Recent creations</h2><p>Your latest generated comic pages on this device.</p></div></div></div>
+      <section id="gallery" className="gallery-section"><div className="section-heading"><div><span className="step">03</span><div><h2>Recent creations</h2><p>{supabaseConfigured && authUser ? "Your saved comic pages, available on your account." : "Your recent pages in this browser session."}</p></div></div></div>
         {history.length === 0 ? <div className="empty-gallery"><ImagePlus size={24}/><b>Your gallery is waiting</b><span>Generated comics will appear here.</span></div> : <div className="history-grid">{history.map(item => <button className="history-thumb" key={item.id} onClick={() => { setResult(item.image); setConfig(item.config); setProvider(item.provider); window.scrollTo({ top: 0, behavior: "smooth" }); }}><img src={item.image} alt="Past comic"/><span>{item.config.style} · {item.config.panels} panels</span></button>)}</div>}
       </section>
       <footer>COMIC CREATOR PRO <span>Made for storytellers.</span></footer>
     </main>
+    {supabaseConfigured && (!authReady || !authUser) && <div className="auth-gate"><form className="auth-card" onSubmit={requestMagicLink}><div className="auth-logo"><WandSparkles size={25}/></div><p className="auth-kicker">YOUR PRIVATE COMIC WORKSPACE</p><h1>{authReady ? "Welcome back." : "Checking your session…"}</h1><p className="auth-copy">{authReady ? "Sign in with your email to save comic pages and character sets securely across devices." : "Connecting to your Comic Creator Pro account."}</p>{authReady && <><label className="auth-label" htmlFor="auth-email">EMAIL ADDRESS</label><input id="auth-email" type="email" required placeholder="you@example.com" value={authEmail} onChange={e => setAuthEmail(e.target.value)}/><button className="generate-btn" disabled={authBusy}>{authBusy ? "Sending magic link…" : "Send me a sign-in link"}</button></>}{authNotice && <p className="auth-notice">{authNotice}</p>}<small>We use Supabase passwordless email sign-in. Your comics and uploaded references remain private to your account.</small></form></div>}
   </div>;
 }
