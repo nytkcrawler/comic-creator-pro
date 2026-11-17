@@ -6,20 +6,12 @@ import {
 } from "lucide-react";
 import AuthGate from "./AuthGate";
 import { supabase } from "./lib/supabase";
+import { artStyles, artTraditions, renderingTechniques, visualTreatments, adultSubgenres } from "./styleLibrary";
 
-const styles = [
-  "Japanese Manga", "American Superhero Comics", "Korean Webtoon",
-  "European Bande Dessinée", "3D Animated Cartoon", "Cinematic Graphic Novel",
-  "Watercolor Illustrated Comics", "Retro Pop Art Comics", "Fine-Art Realism",
-  "European Erotic", "Japanese Ecchi", "Korean Adult Manhwa", "3D Rendered / CGI Comics",
-  "Dark Cinematic Romantic Realism", "Pulp Magazine",
-  "Intimate Oil Painting with Thick Expressive Impasto Brushstrokes",
-  "Detailed Pencil Sketch", "Realistic Charcoal and Graphite Pencil Sketch on Vintage Textured Sepia Paper",
-  "Baroque Oil Painting", "Franco-Belgian & Italian Bande Dessinée"
-];
+const styles = artStyles;
 const panelCounts = [1, 2, 3, 4, 5, 6, 7, 8, 9, 12];
 const options = {
-  genre: ["Romance", "Passionate Romance", "Romantic Comedy", "Drama", "Thriller", "Mystery", "Horror", "Fantasy", "Dark Romance", "Adventure", "Action", "Historical", "Science Fiction", "Slice of Life", "Supernatural", "Psychological Drama"],
+  genre: ["Romance", "Passionate Romance", "Romantic Comedy", "Drama", "Thriller", "Mystery", "Horror", "Fantasy", "Dark Romance", "Adventure", "Action", "Historical", "Science Fiction", "Slice of Life", "Supernatural", "Psychological Drama", "Adult / NSFW (non-explicit mature themes)"],
   layout: ["Classic Grid", "Cinematic Layout", "Vertical Webtoon", "Asymmetrical Layout", "Dynamic Diagonal Panels", "Full-width Cinematic Panels", "Large Splash Panel with Smaller Insets", "Magazine Layout", "Custom Composition"],
   mood: ["Romantic", "Intimate", "Passionate", "Sensual", "Playful", "Emotional", "Melancholic", "Mysterious", "Suspenseful", "Dark", "Dramatic", "Epic", "Dreamlike"],
   color: ["Full Vibrant Color", "Cinematic Color Grading", "Warm Golden Tones", "Cool Moody Tones", "Dark Noir", "Pastel Palette", "Muted Vintage Colors", "Monochrome", "Black and White Ink", "Sepia", "Watercolor Palette", "Rich Oil Painting Palette"],
@@ -34,7 +26,8 @@ const defaults = {
   characters: "Use the uploaded character references. Preserve exact facial identities, hairstyles, skin tones and natural body proportions.",
   outfit: "Maintain consistent outfits throughout the story.", mood: "Passionate",
   color: "Full Vibrant Color", dialogue: "Dialogue and Narration", detail: "Ultra Detailed",
-  ratio: "Portrait 2:3", ending: "Romantic Payoff", adultMode: false
+  ratio: "Portrait 2:3", ending: "Romantic Payoff", adultMode: false,
+  artTradition: "Fine-Art Realism", renderingTechnique: "Oil Painting", visualTreatment: "Dark Cinematic Romantic Realism", adultSubgenre: "Sensual Romance", sensuality: "Moderate", intimacy: "Passionate kissing and embraces", nudityTreatment: "Implied nudity with strategic shadows and drapery", identityLock: true, identityPriority: "Strict identity lock"
 };
 function load(key, fallback) {
   try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; }
@@ -62,6 +55,8 @@ export default function App() {
   const [health, setHealth] = useState({});
   const [history, setHistory] = useState(() => load("ccp-history", []));
   const [refs, setRefs] = useState([]);
+  const [referenceCharacter, setReferenceCharacter] = useState("Character 1");
+  const [referenceView, setReferenceView] = useState("Face close-up");
   const [saved, setSaved] = useState(() => load("ccp-characters", []));
   const [characterName, setCharacterName] = useState("");
   const [advanced, setAdvanced] = useState(false);
@@ -142,7 +137,7 @@ export default function App() {
       return [char.id, {
         characters: details.characters || "",
         outfit: details.outfit || "",
-        refs: (char.reference_paths || []).map(path => ({ name: "Saved character reference", url: signedByPath.get(path) })).filter(ref => ref.url)
+        refs: (char.reference_paths || []).map((path, index) => ({ name: details.referenceMetadata?.[index]?.name || "Saved character reference", character: details.referenceMetadata?.[index]?.character || "Character 1", view: details.referenceMetadata?.[index]?.view || "Face close-up", url: signedByPath.get(path) })).filter(ref => ref.url)
       }];
     }));
     setSaved((sets || []).map(item => {
@@ -219,7 +214,7 @@ export default function App() {
   }
 
   const set = (key, value) => setConfig(c => ({ ...c, [key]: value }));
-  const promptPreview = useMemo(() => config.style + " · " + config.panels + " panels · " + config.genre + " · " + config.layout, [config]);
+  const promptPreview = useMemo(() => [config.artTradition, config.renderingTechnique, config.visualTreatment, config.style, config.panels + " panels", config.genre, config.layout].filter(Boolean).join(" · "), [config]);
 
   async function toOpenAiReferenceDataUrl(ref) {
     if (typeof ref?.url !== "string") throw new Error("A saved character reference is missing its image.");
@@ -267,7 +262,7 @@ export default function App() {
         continue;
       }
       const reader = new FileReader();
-      reader.onload = () => setRefs(old => [...old, { name: file.name, url: String(reader.result) }].slice(0,4));
+      reader.onload = () => setRefs(old => [...old, { name: file.name, character: referenceCharacter, view: referenceView, url: String(reader.result) }].slice(0,4));
       reader.onerror = () => setError("Could not read " + file.name + ".");
       reader.readAsDataURL(file);
     }
@@ -281,7 +276,7 @@ export default function App() {
       const referenceImages = provider === "openai"
         ? await Promise.all(refs.slice(0,4).map(toOpenAiReferenceDataUrl))
         : refs.slice(0,4).map(x => x.url);
-      const payload = { ...config, referenceImages };
+      const payload = { ...config, referenceImages, referenceManifest: refs.slice(0,4).map(({ name, character, view }) => ({ name, character, view })) };
       const response = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: "Bearer " + authData.session.access_token },
@@ -346,7 +341,7 @@ export default function App() {
       const { data: character, error: characterError } = await supabase.from("characters").insert({
         user_id: userId,
         name: characterName.trim(),
-        description: JSON.stringify({ characters: config.characters, outfit: config.outfit }),
+        description: JSON.stringify({ characters: config.characters, outfit: config.outfit, referenceMetadata: refs.map(({ name, character, view }) => ({ name, character, view })) }),
         reference_paths: referencePaths
       }).select("id").single();
       if (characterError) throw characterError;
@@ -461,7 +456,12 @@ export default function App() {
         <div className="form-column">
           <div className="panel-card">
             <div className="card-heading"><span className="icon-tile"><Palette size={18}/></span><div><h3>Art direction</h3><p>Choose the visual language of your comic.</p></div></div>
-            <Field label="ART STYLE"><Select value={config.style} onChange={v => set("style", v)} items={styles}/></Field>
+            <Field label="ART STYLE PRESET"><Select value={config.style} onChange={v => set("style", v)} items={styles}/></Field>
+            <div className="creative-layer-grid">
+              <Field label="01 · ART TRADITION"><Select value={config.artTradition} onChange={v => set("artTradition", v)} items={artTraditions}/></Field>
+              <Field label="02 · RENDERING TECHNIQUE"><Select value={config.renderingTechnique} onChange={v => set("renderingTechnique", v)} items={renderingTechniques}/></Field>
+              <Field label="03 · VISUAL TREATMENT"><Select value={config.visualTreatment} onChange={v => set("visualTreatment", v)} items={visualTreatments}/></Field>
+            </div>
             <div className="two-col">
               <Field label="GENRE"><Select value={config.genre} onChange={v => set("genre", v)} items={options.genre}/></Field>
               <Field label="EMOTIONAL ATMOSPHERE"><Select value={config.mood} onChange={v => set("mood", v)} items={options.mood}/></Field>
@@ -481,10 +481,20 @@ export default function App() {
             <Field label="SCENE / STORY" hint="Describe the location, action, important moments and story progression."><textarea rows="5" value={config.scene} onChange={e => set("scene", e.target.value)} placeholder="Describe your comic scene…"/></Field>
             <Field label="CHARACTER IDENTITY & REFERENCES"><textarea rows="3" value={config.characters} onChange={e => set("characters", e.target.value)}/></Field>
             <Field label="OUTFIT CONTINUITY"><input value={config.outfit} onChange={e => set("outfit", e.target.value)}/></Field>
-            <div className="reference-drop"><ImagePlus size={20}/><div><b>Character reference images</b><small>Upload identity references. Replicate references are sent only when the selected model is configured to accept them.</small></div>
-              <input type="file" accept="image/png,image/jpeg,image/webp" multiple onChange={handleReferenceFiles}/>
-              {refs.length > 0 && <small>{refs.length} reference file(s) ready</small>}
+            <div className="identity-lock-panel">
+              <div className="identity-lock-heading"><ShieldCheck size={17}/><div><b>Character identity lock</b><small>Keep each person distinct and recognizable across every panel.</small></div><label className="switch"><input type="checkbox" checked={config.identityLock !== false} onChange={e => set("identityLock", e.target.checked)}/><span/></label></div>
+              <Field label="IDENTITY PRIORITY"><Select value={config.identityPriority || "Strict identity lock"} onChange={v => set("identityPriority", v)} items={["Strict identity lock","High identity consistency","Artistic adaptation"]}/></Field>
+              <div className="identity-checks"><span>✓ Facial structure and features</span><span>✓ Hair and skin tone</span><span>✓ Natural body proportions</span><span>✓ No identity swapping</span></div>
             </div>
+            <div className="reference-assignment">
+              <Field label="REFERENCE BELONGS TO"><Select value={referenceCharacter} onChange={setReferenceCharacter} items={["Character 1","Character 2","Shared scene reference"]}/></Field>
+              <Field label="REFERENCE VIEW"><Select value={referenceView} onChange={setReferenceView} items={["Face close-up","Front view","Three-quarter view","Side profile","Full body front","Full body back","Outfit reference","Expression reference","Pose reference","Environment reference"]}/></Field>
+            </div>
+            <div className="reference-drop"><ImagePlus size={20}/><div><b>Add character reference images</b><small>PNG, JPEG or WebP · Up to 4 images · 2 MB each. Assign each image to a character and view before uploading.</small></div>
+              <input type="file" accept="image/png,image/jpeg,image/webp" multiple onChange={handleReferenceFiles}/>
+              {refs.length > 0 && <small>{refs.length}/4 references attached</small>}
+            </div>
+            {refs.length > 0 && <div className="reference-gallery">{refs.map((ref,index) => <div className="reference-thumb" key={ref.name + index}><img src={ref.url} alt={ref.name}/><div><b>{ref.character || "Character 1"}</b><small>{ref.view || "Reference"} · {ref.name}</small></div><button className="icon-button" aria-label={"Remove " + ref.name} onClick={() => setRefs(items => items.filter((_,i) => i !== index))}><Trash2 size={14}/></button></div>)}</div>
             <div id="characters" className="character-save"><input placeholder="Character set name" value={characterName} onChange={e => setCharacterName(e.target.value)}/><button className="outline-btn" onClick={saveCharacter}><Plus size={15}/> Save character setup</button></div>
             {saved.length > 0 && <div className="saved-list">{saved.map(c => <div className="saved-item" key={c.id}><button onClick={() => useCharacter(c)}>{c.name}</button><button className="icon-button" onClick={() => deleteCharacterSet(c)}><Trash2 size={14}/></button></div>)}</div>}
           </div>
@@ -510,7 +520,15 @@ export default function App() {
             <div className="provider-note"><ShieldCheck size={16}/> Provider credentials stay on your server. Model availability and content rules are controlled by each provider.</div>
             <button className="advanced-toggle" onClick={() => setAdvanced(v => !v)}><Settings2 size={15}/> Advanced content settings <ChevronDown size={15}/></button>
             {advanced && <div className="adult-settings"><label className="toggle-row"><span><b>18+ mature-content mode</b><small>For adult-only fictional characters and themes. Provider policies still apply.</small></span><input type="checkbox" checked={!!config.adultMode} onChange={e => { if (e.target.checked && window.confirm("I confirm I am 18 or older and will only create content featuring clearly adult fictional characters. Provider policies still apply.")) set("adultMode", true); else set("adultMode", false); }}/></label>
-              {config.adultMode && <div className="adult-warning">Confirm that you are 18 or older. All depicted characters must be clearly adults. This setting cannot bypass provider restrictions or make unsupported models generate prohibited content.</div>}
+              {config.adultMode && <><div className="adult-warning">18+ creative setting. All depicted characters must be clearly adults. This setting does not bypass provider safeguards.</div>
+              <Field label="ADULT SUBGENRE"><Select value={config.adultSubgenre || "Sensual Romance"} onChange={v => set("adultSubgenre", v)} items={adultSubgenres}/></Field>
+              <div className="two-col">
+                <Field label="SENSUALITY"><Select value={config.sensuality || "Moderate"} onChange={v => set("sensuality", v)} items={["Subtle","Moderate","Strong"]}/></Field>
+                <Field label="INTIMACY"><Select value={config.intimacy || "Passionate kissing and embraces"} onChange={v => set("intimacy", v)} items={["Romantic affection","Passionate kissing and embraces","Suggestive non-explicit intimacy"]}/></Field>
+              </div>
+              <Field label="ARTISTIC FIGURE TREATMENT"><Select value={config.nudityTreatment || "Implied nudity with strategic shadows and drapery"} onChange={v => set("nudityTreatment", v)} items={["Fully clothed","Elegant lingerie","Implied nudity with strategic shadows and drapery","Classical non-explicit figure study","Silhouette and backlit figure study"]}/></Field>
+              <p className="tiny-note">Mature themes and non-explicit artistic figure studies only. No graphic sexual activity or explicit genital detail. Provider content policies apply.</p>
+            </>}
               <p className="tiny-note">Provider safeguards and model restrictions always apply.</p>
             </div>}
           </div>
