@@ -50,3 +50,12 @@ OpenAI API usage is billed separately from ChatGPT subscriptions. Venice and Rep
 - Character references can be assigned to Character 1, Character 2 or a shared scene, with a view label (face, profile, full body, outfit, pose or environment).
 - Identity-lock instructions and the reference manifest are included in the generation brief. Actual image-reference fidelity depends on the selected provider and model; OpenAI receives uploaded reference images directly. Replicate requires a compatible model and configured reference input key. Venice generation currently uses the written brief unless its provider integration is extended to accept image inputs.
 - Reference images remain in the private `character-refs` bucket when saved to a character set.
+
+
+## Non-negotiable page composition and one-shot generation
+- The page is generated as **one image from one image-generation request**. The server must never issue one generation request per panel, generate alternate images for a page, or stitch separate panel images.
+- OpenAI image generation uses one forced image-generation tool call, disables parallel tool calls, and validates that exactly one image-generation result is returned.
+- Venice requests `n: 1`; Replicate requests `num_outputs: 1`. The app accepts and stores one final page image.
+- The default layout is **Adaptive Cinematic (Reference)**. It uses a portrait editorial composition inspired by the user's reference: a large opening panel, varied asymmetric panels, occasional diagonal gutters, close-up reaction beats and a visually strong closing panel.
+- The layout plan adapts to the selected count (1, 2, 3, 4, 5, 6, 7, 8, 9 or 12). Panel count means the number of complete bordered regions on the one page, not the number of generated images.
+- One image-generation request does not guarantee identical costs across providers/models or perfect panel geometry. Provider output resolution, model capabilities and prompt adherence still apply.

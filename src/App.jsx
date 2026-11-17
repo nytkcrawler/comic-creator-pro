@@ -12,7 +12,7 @@ const styles = artStyles;
 const panelCounts = [1, 2, 3, 4, 5, 6, 7, 8, 9, 12];
 const options = {
   genre: ["Romance", "Passionate Romance", "Romantic Comedy", "Drama", "Thriller", "Mystery", "Horror", "Fantasy", "Dark Romance", "Adventure", "Action", "Historical", "Science Fiction", "Slice of Life", "Supernatural", "Psychological Drama", "Adult / NSFW (non-explicit mature themes)"],
-  layout: ["Classic Grid", "Cinematic Layout", "Vertical Webtoon", "Asymmetrical Layout", "Dynamic Diagonal Panels", "Full-width Cinematic Panels", "Large Splash Panel with Smaller Insets", "Magazine Layout", "Custom Composition"],
+  layout: ["Adaptive Cinematic (Reference)", "Cinematic Layout", "Vertical Webtoon", "Asymmetrical Layout", "Dynamic Diagonal Panels", "Full-width Cinematic Panels", "Large Splash Panel with Smaller Insets", "Classic Grid", "Magazine Layout", "Custom Composition"],
   mood: ["Romantic", "Intimate", "Passionate", "Sensual", "Playful", "Emotional", "Melancholic", "Mysterious", "Suspenseful", "Dark", "Dramatic", "Epic", "Dreamlike"],
   color: ["Full Vibrant Color", "Cinematic Color Grading", "Warm Golden Tones", "Cool Moody Tones", "Dark Noir", "Pastel Palette", "Muted Vintage Colors", "Monochrome", "Black and White Ink", "Sepia", "Watercolor Palette", "Rich Oil Painting Palette"],
   ending: ["Cliffhanger", "Romantic Payoff", "Dramatic Reveal", "Action Climax", "Emotional Resolution", "Open Ending", "Unexpected Twist", "User Defined"],
@@ -21,7 +21,7 @@ const options = {
   detail: ["Standard", "Highly Detailed", "Ultra Detailed", "Photorealistic", "Premium Cinematic"]
 };
 const defaults = {
-  style: "Japanese Manga", genre: "Romance", panels: 8, layout: "Cinematic Layout",
+  style: "Japanese Manga", genre: "Romance", panels: 8, layout: "Adaptive Cinematic (Reference)",
   scene: "A passionate romantic encounter between two adult lovers during a rainstorm in Paris.",
   characters: "Use the uploaded character references. Preserve exact facial identities, hairstyles, skin tones and natural body proportions.",
   outfit: "Maintain consistent outfits throughout the story.", mood: "Passionate",
@@ -543,9 +543,9 @@ export default function App() {
             <div className="security-card"><ShieldCheck size={18}/><div><b>Private API credentials</b><p>Your keys are stored in the backend environment, never in browser code or local storage.</p></div></div>
           </div>
 
-          <div className="generate-wrap"><div className="prompt-summary"><span>YOUR CONFIGURATION</span><b>{promptPreview}</b><small>One cohesive comic page · {config.dialogue} · {config.detail}</small></div>
+          <div className="generate-wrap"><div className="prompt-summary"><span>YOUR CONFIGURATION</span><b>{promptPreview}</b><small>ONE image-generation call · {config.panels} adaptive panels · {config.dialogue} · {config.detail}</small></div>
             <button className="generate-btn" disabled={busy || !config.scene.trim()} onClick={generate}>{busy ? <><LoaderCircle className="spin" size={19}/> Generating your comic…</> : <><WandSparkles size={19}/> Generate comic page <span>✦</span></>}</button>
-            <small className="generate-foot">One provider request creates one image containing the complete {config.panels}-panel page. Generation time and cost depend on your selected model and provider.</small>
+            <small className="generate-foot">Exactly one image-generation request returns one complete page with all {config.panels} panels. No per-panel generation, no stitching, no extra image calls. Generation cost is for one image output from your selected provider/model.</small>
           </div>
         </aside>
       </section>

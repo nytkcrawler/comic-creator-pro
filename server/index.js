@@ -16,26 +16,46 @@ function clip(value, max) {
   return String(value ?? "").trim().slice(0, max);
 }
 
+function adaptivePanelComposition(panels) {
+  const plans = {
+    1: "ONE full-page splash panel, edge-to-edge artwork, no internal gutters.",
+    2: "ONE dominant full-width upper panel (about 60% page height) and ONE shorter cinematic lower panel.",
+    3: "ONE large full-width establishing/hero panel across the top (about 45%); TWO contrasting panels side-by-side below.",
+    4: "ONE wide dominant top panel (about 34%); TWO unequal middle panels; ONE wide dramatic closing panel across the bottom.",
+    5: "ONE wide hero panel at top; TWO unequal panels in the middle row; TWO lower panels with different widths for reaction and payoff.",
+    6: "ONE wide opening panel; TWO middle panels side-by-side; TWO lower panels with an asymmetrical split; ONE wide closing strip. Vary heights to pace the action.",
+    7: "ONE wide opening panel; TWO middle panels; TWO dynamic angled action/reaction panels; TWO lower panels, with the final panel visually emphasized.",
+    8: "REFERENCE PAGE RHYTHM: ONE large full-width opening panel across the top (roughly 28-32%); TWO middle panels with unequal widths; TWO larger lower-middle panels with a diagonal or slanted gutter; TWO bottom panels with a close-up/reaction panel and a romantic/emotional payoff. Keep all seven gutters clear and reading order unmistakable.",
+    9: "ONE wide opening panel; TWO unequal panels beneath; THREE varied panels in the central action row; TWO lower reaction panels; ONE wide final payoff panel.",
+    12: "ONE wide opening panel; THREE varied panels in the next row; THREE varied action/reaction panels in the middle; THREE narrower cinematic beats in the next row; TWO wider closing panels. Use varied widths/heights and occasional diagonal gutters, never a uniform grid."
+  };
+  return plans[panels] || "Use a varied, asymmetrical editorial composition with one dominant hero panel, varied supporting panels and a clear final beat.";
+}
+
 function buildComicPrompt(config, maxLength = 30000) {
   const panels = allowedPanels.has(Number(config.panels)) ? Number(config.panels) : 4;
   const dialogue = config.dialogue === "No Text"
     ? "No speech bubbles, captions or written text."
     : "Use legible speech bubbles and narration only where selected; assign every line to the correct character and spell it correctly.";
   const prompt = [
-    "Create ONE complete, cohesive comic PAGE AS A SINGLE IMAGE, not a set of images. Show EXACTLY " + panels + " distinct bordered panels, no more and no less. Make reading order obvious.",
+    "NON-NEGOTIABLE OUTPUT CONTRACT: Create exactly ONE finished comic page as ONE raster image from ONE image-generation call. The image itself must contain all " + panels + " panels. Never make one image per panel, never call the image generator in a loop, never create alternative outputs, and never stitch, collage, composite or assemble separately generated panel images. Return exactly one final image file.",
+    "PANEL COUNT: Show EXACTLY " + panels + " distinct comic panels, no more and no less. Count the complete bordered regions. Do not add inset panels or split a panel unless that split is included in the requested count. Keep gutters/borders clean and reading order immediately obvious.",
+    "ADAPTIVE PAGE COMPOSITION: " + adaptivePanelComposition(panels),
+    "REFERENCE COMPOSITION LANGUAGE: Use a portrait comic-page canvas inspired by the supplied example: a large cinematic opening panel, varied asymmetrical panel widths and heights, selective diagonal/slanted gutters for dramatic beats, close-up reaction inserts, and a strong bottom/last-panel emotional payoff. The layout must reflow intelligently for the selected panel count rather than stretching one fixed template. Avoid a regular spreadsheet grid unless the user explicitly selects Classic Grid.",
+    "PANEL GEOMETRY: Allocate more area to important story beats; use wide establishing panels, medium action panels, tight facial/emotional close-ups and reaction panels. Keep every panel fully inside the page with visible gutters. Never crop a panel off the canvas. Preserve an obvious top-to-bottom, left-to-right reading path.",
     "Art style preset: " + clip(config.style, 110) + ".",
     "Art tradition: " + clip(config.artTradition, 80) + ". Rendering technique: " + clip(config.renderingTechnique, 90) + ". Visual treatment: " + clip(config.visualTreatment, 90) + ".",
     "Genre: " + clip(config.genre, 65) + (config.adultMode ? ". Adult subgenre: " + clip(config.adultSubgenre, 60) + "." : "."),
-    "Layout: " + clip(config.layout, 65) + ". Aspect ratio: " + clip(config.ratio, 25) + ".",
+    "Layout preference: " + clip(config.layout, 65) + ". Apply the adaptive panel composition plan for the exact panel count while respecting this preference. Aspect ratio: " + clip(config.ratio, 25) + ".",
     "Mood: " + clip(config.mood, 35) + ". Colors: " + clip(config.color, 55) + ". Detail: " + clip(config.detail, 35) + ". Ending: " + clip(config.ending, 45) + ".",
     config.adultMode ? "Mature creative direction: sensuality " + clip(config.sensuality, 20) + "; intimacy " + clip(config.intimacy, 65) + "; artistic figure treatment " + clip(config.nudityTreatment, 100) + ". Keep all depictions non-explicit and within provider policy." : "",
     "Scene: " + clip(config.scene, 260),
     (config.identityLock !== false ? "STRICT CHARACTER IDENTITY LOCK (" + clip(config.identityPriority || "Strict identity lock", 40) + "): " : "Character continuity: ") + clip(config.characters, 260),
     "Outfit continuity: " + clip(config.outfit, 140),
     "Reference assignment: " + (Array.isArray(config.referenceManifest) ? config.referenceManifest.slice(0,4).map((ref,index) => "Image " + (index + 1) + " = " + clip(ref.character, 30) + ", " + clip(ref.view, 40) + ", file " + clip(ref.name, 60)).join("; ") : "Use attached references in upload order.") + ". Preserve each character's own face; never swap identities.",
-    "Use cinematic pacing with varied wide, medium, close-up and reaction shots. Every panel advances the same story. Keep faces, body proportions, hairstyles, clothes, props, location and lighting consistent. Use clean gutters and professional composition.",
+    "Use cinematic pacing with varied wide, medium, close-up and reaction shots. Every panel advances the same story. Keep faces, body proportions, hairstyles, clothes, props, location and lighting consistent. Use clean gutters and professional composition. The layout is a single unified page design, not a collection of independent images.",
     dialogue,
-    "The entire page and all panels must be rendered inside this ONE image. Do not generate separate panels, extra pages, alternatives, thumbnails or contact sheets.",
+    "FINAL OUTPUT CHECK: Render the entire page and all panels together inside this ONE image. Exactly one generation call, exactly one image output, exactly " + panels + " panels. No separate panel files, no extra pages, no alternatives, no thumbnails, no contact sheets and no post-generation stitching.",
     config.adultMode
       ? "All fictional characters must be clearly adults. Follow the image provider's own content policy."
       : "Follow the image provider's content policy. All characters must be clearly adults."
