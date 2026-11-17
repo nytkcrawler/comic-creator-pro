@@ -494,7 +494,7 @@ export default function App() {
               <input type="file" accept="image/png,image/jpeg,image/webp" multiple onChange={handleReferenceFiles}/>
               {refs.length > 0 && <small>{refs.length}/4 references attached</small>}
             </div>
-            {refs.length > 0 && <div className="reference-gallery">{refs.map((ref,index) => <div className="reference-thumb" key={ref.name + index}><img src={ref.url} alt={ref.name}/><div><b>{ref.character || "Character 1"}</b><small>{ref.view || "Reference"} · {ref.name}</small></div><button className="icon-button" aria-label={"Remove " + ref.name} onClick={() => setRefs(items => items.filter((_,i) => i !== index))}><Trash2 size={14}/></button></div>)}</div>
+            {refs.length > 0 && <div className="reference-gallery">{refs.map((ref,index) => <div className="reference-thumb" key={ref.name + index}><img src={ref.url} alt={ref.name}/><div><b>{ref.character || "Character 1"}</b><small>{ref.view || "Reference"} · {ref.name}</small></div><button className="icon-button" aria-label={"Remove " + ref.name} onClick={() => setRefs(items => items.filter((_,i) => i !== index))}><Trash2 size={14}/></button></div>)}</div>}
             <div id="characters" className="character-save"><input placeholder="Character set name" value={characterName} onChange={e => setCharacterName(e.target.value)}/><button className="outline-btn" onClick={saveCharacter}><Plus size={15}/> Save character setup</button></div>
             {saved.length > 0 && <div className="saved-list">{saved.map(c => <div className="saved-item" key={c.id}><button onClick={() => useCharacter(c)}>{c.name}</button><button className="icon-button" onClick={() => deleteCharacterSet(c)}><Trash2 size={14}/></button></div>)}</div>}
           </div>
