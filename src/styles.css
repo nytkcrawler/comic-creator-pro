@@ -30,3 +30,29 @@
 .auth-feedback{padding:12px 14px;margin-top:16px;border-radius:10px;background:#22211c;color:#f3d784;font-size:13px;line-height:1.5}
 .auth-error{background:#321e20;color:#ffc3c6}
 .auth-foot{margin-top:22px!important;font-size:12px!important;color:#777681!important}
+
+/* Expanded art-direction and character-reference controls */
+.creative-layer-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 13px}
+.creative-layer-grid .field:last-child{grid-column:1/-1}
+.identity-lock-panel{margin-top:16px;padding:13px;border:1px solid #315b50;background:linear-gradient(140deg,#13251f,#151925);border-radius:11px}
+.identity-lock-heading{display:flex;align-items:center;gap:10px;color:#9de0bf}
+.identity-lock-heading>div{flex:1}
+.identity-lock-heading b,.identity-lock-heading small{display:block}
+.identity-lock-heading b{font-size:11px;color:#e5f5ec}
+.identity-lock-heading small{font-size:9px;color:#94aa9f;margin-top:4px;line-height:1.45}
+.identity-checks{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:12px;color:#9fd8b8;font-size:9px}
+.switch{position:relative;display:inline-flex;align-items:center}
+.switch input{position:absolute;opacity:0;width:1px;height:1px}
+.switch span{width:34px;height:19px;border-radius:20px;background:#444958;position:relative;cursor:pointer;transition:.2s}
+.switch span:after{content:"";position:absolute;width:13px;height:13px;left:3px;top:3px;border-radius:50%;background:#fff;transition:.2s}
+.switch input:checked+span{background:#398d68}
+.switch input:checked+span:after{transform:translateX(15px)}
+.reference-assignment{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.reference-gallery{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+.reference-thumb{display:flex;align-items:center;gap:8px;min-width:0;padding:7px;background:#0e1019;border:1px solid var(--line);border-radius:9px}
+.reference-thumb img{width:42px;height:48px;object-fit:cover;border-radius:5px;background:#252536}
+.reference-thumb>div{flex:1;min-width:0}
+.reference-thumb b,.reference-thumb small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.reference-thumb b{font-size:9px;color:#dcd5ef}
+.reference-thumb small{font-size:8px;color:#888b9b;margin-top:4px}
+@media(max-width:520px){.creative-layer-grid,.reference-assignment,.reference-gallery{grid-template-columns:1fr}.creative-layer-grid .field:last-child{grid-column:auto}.identity-checks{grid-template-columns:1fr}}

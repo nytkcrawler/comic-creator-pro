@@ -42,3 +42,11 @@ OpenAI API usage is billed separately from ChatGPT subscriptions. Venice and Rep
 - Adult settings do not bypass provider safeguards.
 - Private image links are time-limited signed URLs.
 - Beta generation quota is 10 pages per user per hour.
+
+
+## Expanded creative direction and identity references
+- The style library separates art tradition, rendering technique, visual treatment and style preset so they can be combined.
+- Adult mode is an age-gated setting for mature themes and non-explicit artistic figure studies. It does not bypass provider safeguards; all characters must be clearly adults.
+- Character references can be assigned to Character 1, Character 2 or a shared scene, with a view label (face, profile, full body, outfit, pose or environment).
+- Identity-lock instructions and the reference manifest are included in the generation brief. Actual image-reference fidelity depends on the selected provider and model; OpenAI receives uploaded reference images directly. Replicate requires a compatible model and configured reference input key. Venice generation currently uses the written brief unless its provider integration is extended to accept image inputs.
+- Reference images remain in the private `character-refs` bucket when saved to a character set.
