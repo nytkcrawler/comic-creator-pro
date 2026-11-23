@@ -46,10 +46,24 @@ export function selectProviderModel(models, request, env = process.env) {
     item.enabled && item.style_key === request.style && item.content_category === request.contentCategory
   );
   const preferredId = rule?.provider_model_id;
+  const weights = rule?.weights && typeof rule.weights === "object"
+    ? rule.weights
+    : { quality: 0.4, identity: 0.25, layout: 0.2, cost: 0.15 };
+  const dimensions = ["quality", "identity", "layout", "cost"];
+  const normalizedWeights = Object.fromEntries(dimensions.map(key => [
+    key, Math.min(1, Math.max(0, Number(weights[key]) || 0))
+  ]));
+  const weightTotal = dimensions.reduce((sum, key) => sum + normalizedWeights[key], 0) || 1;
+  const score = model => dimensions.reduce((sum, key) => {
+    const raw = Number(model.capabilities?.scores?.[key]);
+    const metric = Number.isFinite(raw) ? Math.min(1, Math.max(0, raw)) : 0.5;
+    return sum + metric * normalizedWeights[key] / weightTotal;
+  }, 0);
   return candidates.sort((a, b) => {
     if (preferredId && a.id === preferredId && b.id !== preferredId) return -1;
     if (preferredId && b.id === preferredId && a.id !== preferredId) return 1;
-    return Number(a.routing_priority || 100) - Number(b.routing_priority || 100)
+    return score(b) - score(a)
+      || Number(a.routing_priority || 100) - Number(b.routing_priority || 100)
       || String(a.provider_key).localeCompare(String(b.provider_key))
       || String(a.model_key).localeCompare(String(b.model_key));
   })[0];
