@@ -310,7 +310,7 @@ app.post("/api/generate", requireAuthenticatedUser, validateGenerationRequest, a
     const { data: models, error: modelsError } = await req.userSupabase.from("provider_models").select("*").eq("enabled", true);
     if (modelsError) throw new Error("Could not load the enabled provider model registry.");
     const { data: routingRules, error: rulesError } = await req.userSupabase.from("model_routing_rules").select("*").eq("enabled", true)
-      .eq("style_key", style).eq("content_category", contentCategory);
+      .eq("style_key", style).eq("content_category", contentCategory).order("priority", { ascending: true });
     if (rulesError) throw new Error("Could not load provider routing preferences.");
 
     const chosen = selectProviderModel(models || [], {
