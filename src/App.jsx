@@ -202,7 +202,7 @@ function ProviderManager({ supabase }) {
           <Field label="ART STYLE"><Select value={ruleForm.style_key} onChange={v => setRuleForm(x => ({...x,style_key:v}))} items={styles}/></Field>
           <Field label="CONTENT CATEGORY"><Select value={ruleForm.content_category} onChange={v => setRuleForm(x => ({...x,content_category:v}))} items={["general","mature"]}/></Field>
         </div>
-        <Field label="PREFERRED MODEL"><Select value={ruleForm.provider_model_id} onChange={v => setRuleForm(x => ({...x,provider_model_id:v}))} items={["",...models.map(m => m.id + " · " + m.display_name)] .map(x => x.includes(" · ") ? x : "Select a model")}/></Field>
+        <Field label="PREFERRED MODEL"><div className="select-wrap"><select value={ruleForm.provider_model_id} onChange={e => setRuleForm(x => ({...x,provider_model_id:e.target.value}))}><option value="">Select a model</option>{models.map(model => <option key={model.id} value={model.id}>{model.display_name} · {model.provider_key}</option>)}</select><ChevronDown size={16}/></div></Field>
         <div className="two-col">{["quality","identity","layout","cost"].map(key => <Field key={key} label={key.toUpperCase()+" WEIGHT"}><input type="number" min="0" max="1" step="0.05" value={ruleForm[key]} onChange={e => setRuleForm(x => ({...x,[key]:e.target.value}))}/></Field>)}</div>
         <Field label="RULE PRIORITY"><input type="number" min="1" value={ruleForm.priority} onChange={e => setRuleForm(x => ({...x,priority:e.target.value}))}/></Field>
         <button className="generate-btn" type="submit" disabled={saving || !models.length}>Add routing rule</button>
