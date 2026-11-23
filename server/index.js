@@ -124,7 +124,8 @@ async function requireAuthenticatedUser(req, res, next) {
 }
 
 function validateGenerationRequest(req, res, next) {
-  const { selection = { mode: "manual", provider: req.body?.provider }, config = {} } = req.body || {};
+  const config = req.body?.config || {};
+  const selection = req.body?.selection || { mode: "manual", provider: req.body?.provider };
   if (!["auto", "manual"].includes(selection.mode)) return res.status(400).json({ error: "Choose automatic routing or a manual provider." });
   if (selection.mode === "manual" && !allowedProviders.has(selection.provider)) return res.status(400).json({ error: "Choose OpenAI, Venice or Replicate." });
   if (typeof config.scene !== "string" || !config.scene.trim()) {
@@ -296,7 +297,9 @@ app.post("/api/generate", requireAuthenticatedUser, validateGenerationRequest, a
   let jobId = null;
   const startedAt = Date.now();
   try {
-    const { selection = { mode: "manual", provider: req.body?.provider }, config = {}, previousResponseId, refinement } = req.body || {};
+    const config = req.body?.config || {};
+    const selection = req.body?.selection || { mode: "manual", provider: req.body?.provider };
+    const { previousResponseId, refinement } = req.body || {};
     if (typeof config.scene !== "string" || !config.scene.trim()) return res.status(400).json({ error: "Describe the comic scene before generating." });
     const panels = Number(config.panels);
     if (!allowedPanels.has(panels)) return res.status(400).json({ error: "Choose a supported panel count." });
