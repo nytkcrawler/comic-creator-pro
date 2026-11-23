@@ -3,6 +3,8 @@ import express from "express";
 import { createClient } from "@supabase/supabase-js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
+import { selectProviderModel } from "./provider-router.js";
 
 const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -122,22 +124,14 @@ async function requireAuthenticatedUser(req, res, next) {
 }
 
 function validateGenerationRequest(req, res, next) {
-  const { provider, config = {} } = req.body || {};
-  if (!allowedProviders.has(provider)) return res.status(400).json({ error: "Choose OpenAI, Venice or Replicate." });
+  const { selection = { mode: "manual", provider: req.body?.provider }, config = {} } = req.body || {};
+  if (!["auto", "manual"].includes(selection.mode)) return res.status(400).json({ error: "Choose automatic routing or a manual provider." });
+  if (selection.mode === "manual" && !allowedProviders.has(selection.provider)) return res.status(400).json({ error: "Choose OpenAI, Venice or Replicate." });
   if (typeof config.scene !== "string" || !config.scene.trim()) {
     return res.status(400).json({ error: "Describe the comic scene before generating." });
   }
   if (!allowedPanels.has(Number(config.panels))) {
     return res.status(400).json({ error: "Choose a supported panel count." });
-  }
-  if (provider === "openai" && !process.env.OPENAI_API_KEY) {
-    return res.status(503).json({ error: "OpenAI API key is not configured yet. Add OPENAI_API_KEY in Vercel before generating." });
-  }
-  if (provider === "venice" && !process.env.VENICE_API_KEY) {
-    return res.status(503).json({ error: "Venice API key is not configured yet." });
-  }
-  if (provider === "replicate" && !(process.env.REPLICATE_API_TOKEN && process.env.REPLICATE_MODEL_OWNER && process.env.REPLICATE_MODEL_NAME)) {
-    return res.status(503).json({ error: "Replicate API token and model settings are not configured yet." });
   }
   next();
 }
@@ -178,7 +172,7 @@ function openAiInputImages(referenceImages) {
     .map(imageUrl => ({ type: "input_image", image_url: imageUrl, detail: "auto" }));
 }
 
-async function generateWithOpenAI(prompt, config, previousResponseId = null, refinement = null) {
+async function generateWithOpenAI(prompt, config, modelKey, previousResponseId = null, refinement = null) {
   const key = process.env.OPENAI_API_KEY;
   if (!key) throw new Error("OPENAI_API_KEY is missing on the server. Add it in Vercel Environment Variables to enable OpenAI generation.");
 
@@ -191,7 +185,7 @@ async function generateWithOpenAI(prompt, config, previousResponseId = null, ref
   }
 
   const requestBody = {
-    model: process.env.OPENAI_RESPONSE_MODEL || "gpt-5.5",
+    model: modelKey,
     input: [{ role: "user", content: inputContent }],
     tools: [{
       type: "image_generation",
@@ -229,7 +223,7 @@ async function generateWithOpenAI(prompt, config, previousResponseId = null, ref
   };
 }
 
-async function generateWithVenice(prompt, config, model) {
+async function generateWithVenice(prompt, config, modelKey) {
   const key = process.env.VENICE_API_KEY;
   if (!key) throw new Error("VENICE_API_KEY is missing on the server.");
   const moderation = config.adultMode && process.env.VENICE_MODERATION === "low" ? "low" : "auto";
@@ -237,7 +231,7 @@ async function generateWithVenice(prompt, config, model) {
     method: "POST",
     headers: { Authorization: "Bearer " + key, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: model || process.env.VENICE_IMAGE_MODEL || "z-image-turbo",
+      model: modelKey,
       prompt,
       n: 1,
       size: veniceSizeForRatio(config.ratio),
@@ -254,7 +248,7 @@ async function generateWithVenice(prompt, config, model) {
   return { image, blurred: Boolean(item?.blurred), generationMode: "single-full-page", pageImageCount: 1 };
 }
 
-async function generateWithReplicate(prompt, config) {
+async function generateWithReplicate(prompt, config, modelKey) {
   const token = process.env.REPLICATE_API_TOKEN;
   const owner = process.env.REPLICATE_MODEL_OWNER;
   const name = process.env.REPLICATE_MODEL_NAME;
@@ -267,6 +261,8 @@ async function generateWithReplicate(prompt, config) {
     : [];
   if (referenceKey && references.length) input[referenceKey] = references.length === 1 ? references[0] : references;
 
+  const [selectedOwner, selectedName] = String(modelKey || "").split("/");
+  if (selectedOwner !== owner || selectedName !== name) throw new Error("Selected Replicate model does not match the server's configured model.");
   const url = version
     ? "https://api.replicate.com/v1/predictions"
     : "https://api.replicate.com/v1/models/" + encodeURIComponent(owner) + "/" + encodeURIComponent(name) + "/predictions";
@@ -297,20 +293,68 @@ app.get("/api/health", (_req, res) => {
 });
 
 app.post("/api/generate", requireAuthenticatedUser, validateGenerationRequest, enforceGenerationLimit, async (req, res) => {
+  let jobId = null;
+  const startedAt = Date.now();
   try {
-    const { provider, config = {}, veniceModel, previousResponseId, refinement } = req.body || {};
-    if (!allowedProviders.has(provider)) return res.status(400).json({ error: "Choose OpenAI, Venice or Replicate." });
+    const { selection = { mode: "manual", provider: req.body?.provider }, config = {}, previousResponseId, refinement } = req.body || {};
     if (typeof config.scene !== "string" || !config.scene.trim()) return res.status(400).json({ error: "Describe the comic scene before generating." });
     const panels = Number(config.panels);
     if (!allowedPanels.has(panels)) return res.status(400).json({ error: "Choose a supported panel count." });
-    const prompt = buildComicPrompt({ ...config, panels }, provider === "venice" ? 1490 : 30000);
-    const result = provider === "openai"
-      ? await generateWithOpenAI(prompt, config, previousResponseId || null, refinement || null)
-      : provider === "venice"
-        ? await generateWithVenice(prompt, config, veniceModel)
-        : await generateWithReplicate(prompt, config);
-    res.json({ ...result, quota: req.generationQuota });
+
+    const style = clip(config.style, 110);
+    const contentCategory = config.adultMode ? "mature" : "general";
+    const referenceCount = Array.isArray(config.referenceImages) ? config.referenceImages.length : 0;
+    const { data: models, error: modelsError } = await req.userSupabase.from("provider_models").select("*").eq("enabled", true);
+    if (modelsError) throw new Error("Could not load the enabled provider model registry.");
+    const { data: routingRules, error: rulesError } = await req.userSupabase.from("model_routing_rules").select("*").eq("enabled", true)
+      .eq("style_key", style).eq("content_category", contentCategory);
+    if (rulesError) throw new Error("Could not load provider routing preferences.");
+
+    const chosen = selectProviderModel(models || [], {
+      mode: selection.mode, provider: selection.provider, style, contentCategory,
+      aspectRatio: clip(config.ratio, 25), referenceCount, isEdit: Boolean(refinement),
+      routingRules: routingRules || []
+    });
+    if (!chosen) return res.status(409).json({
+      error: selection.mode === "auto"
+        ? "No compatible model is enabled for automatic routing. Enable a verified model in Provider Models with matching style, aspect-ratio and reference-image capabilities."
+        : "No compatible enabled model is configured for that provider. Check its registry entry, credentials and capabilities."
+    });
+
+    const prompt = buildComicPrompt({ ...config, panels }, chosen.provider_key === "venice" ? 1490 : 30000);
+    const idempotencyKey = clip(req.headers["idempotency-key"], 120) || randomUUID();
+    const { data: job, error: jobError } = await req.userSupabase.from("generation_jobs").insert({
+      user_id: req.user.id, provider_model_id: chosen.id, provider_key: chosen.provider_key,
+      model_key: chosen.model_key, status: "processing",
+      request_payload: { style, panel_count: panels, content_category: contentCategory, aspect_ratio: clip(config.ratio, 25), reference_count: referenceCount, selection_mode: selection.mode },
+      idempotency_key: idempotencyKey, started_at: new Date().toISOString()
+    }).select("id").single();
+    if (jobError) throw new Error("Could not create the generation job record.");
+    jobId = job.id;
+
+    const result = chosen.provider_key === "openai"
+      ? await generateWithOpenAI(prompt, config, chosen.model_key, previousResponseId || null, refinement || null)
+      : chosen.provider_key === "venice"
+        ? await generateWithVenice(prompt, config, chosen.model_key)
+        : await generateWithReplicate(prompt, config, chosen.model_key);
+
+    const elapsed = Date.now() - startedAt;
+    const finalStatus = result.image ? "completed" : "processing";
+    await req.userSupabase.from("generation_jobs").update({
+      status: finalStatus, provider_request_id: result.predictionId || result.responseId || null,
+      completed_at: result.image ? new Date().toISOString() : null
+    }).eq("id", jobId);
+    await req.userSupabase.from("generation_provider_usage").insert({
+      job_id: jobId, user_id: req.user.id, provider_key: chosen.provider_key,
+      model_key: chosen.model_key, provider_request_id: result.predictionId || result.responseId || null,
+      latency_ms: elapsed, usage_details: { status: finalStatus, single_page_output: true }
+    });
+    res.json({ ...result, provider: chosen.provider_key, model: chosen.model_key, jobId, quota: req.generationQuota });
   } catch (error) {
+    if (jobId) await req.userSupabase.from("generation_jobs").update({
+      status: "failed", error_code: "provider_generation_failed",
+      error_message: clip(error.message, 500), completed_at: new Date().toISOString()
+    }).eq("id", jobId);
     console.error("[comic-generate]", error);
     res.status(502).json({ error: error.message || "Image generation failed." });
   }
