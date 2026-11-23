@@ -1,6 +1,6 @@
 # Phase 1: Platform foundation
 
-Status: Phase 1 database foundation migration applied successfully to the linked Supabase project. API integration, transactional credit functions, seed configuration, and automated authorization tests remain in progress.
+Status: private single-owner architecture selected. Provider registry, routing, jobs and usage telemetry are retained. Customer billing tables have been removed. Owner admin role is assigned to the sole existing Auth account.
 
 ## Repository baseline
 
@@ -26,17 +26,14 @@ Five existing migrations were found:
 
 Existing tables already include `characters`, `character_sets`, `user_roles` (enum values: admin, moderator, user), and `generation_usage`. These were reused rather than duplicated. The existing `has_role(uuid, app_role)` helper and user-owned RLS patterns were inspected.
 
-The additive migration `20261123144653_comic_platform_provider_billing_jobs` was successfully applied. All eight new tables were verified in the live database with RLS enabled:
+The additive migration `20261123144653_comic_platform_provider_billing_jobs` was applied. A follow-up migration `20261123150210_private_single_owner_no_billing` removed the unused customer billing tables and assigned the sole existing Auth account the admin role. The following platform tables remain:
 - `provider_models`
-- `model_pricing`
 - `model_routing_rules`
-- `credit_accounts`
 - `generation_jobs`
-- `credit_ledger`
 - `generation_provider_usage`
 - `admin_audit_log`
 
-The migration was committed to the development branch with a filename matching the applied remote migration version. No existing comic, character, role, or usage tables were recreated or renamed. No provider model rows or pricing values have been seeded yet.
+The migration was committed to the development branch with a filename matching the applied remote migration version. No existing comic, character, role, or usage tables were recreated or renamed. Verification found one Auth account and one admin role assignment. Provider model registry is empty and ready for verified provider configuration.
 
 ## Phase 1 scope
 
@@ -49,10 +46,9 @@ The migration was committed to the development branch with a filename matching t
    - single-image output support
    - policy/content eligibility flags
    - enabled state and routing priority
-4. Add admin-managed model pricing, keeping provider cost separate from customer credit price.
-5. Add credit accounts and an append-only credit ledger.
-6. Add persistent generation jobs and provider usage records.
-7. Add model-routing rules and admin audit events.
+4. Add persistent generation jobs and provider usage telemetry.
+5. Add model-routing rules and admin audit events.
+6. Track provider API usage/cost optionally for personal visibility, with no customer billing.
 8. Enable RLS on every new exposed public table and grant only the minimum required table/function permissions.
 9. Add database tests for allowed and denied operations.
 10. Verify migrations locally and against an isolated development database before any production deployment.
@@ -63,15 +59,12 @@ The migration was committed to the development branch with a filename matching t
 |---|---|
 | `public.app_user_roles` | Server-managed user roles, including administrator |
 | `public.provider_models` | Provider/model catalogue and capability metadata |
-| `public.model_pricing` | Versioned admin-controlled credit prices and provider cost assumptions |
 | `public.model_routing_rules` | Style/content/capability routing priorities |
-| `public.credit_accounts` | Per-user available and reserved credit balances |
-| `public.credit_ledger` | Append-only reservations, charges, refunds, and adjustments |
 | `public.generation_jobs` | Durable generation lifecycle and idempotency |
 | `public.generation_usage` | Provider request IDs, actual usage, latency, and cost |
 | `public.admin_audit_log` | Audit trail for model, pricing, and routing changes |
 
-The initial additive columns, foreign keys, indexes, and policies are now live. Existing tables are reused where appropriate. Credit reservation/settlement RPCs and provider seed data remain to be implemented.
+The initial additive columns, foreign keys, indexes, and policies are live. The customer billing tables were removed in the follow-up migration. Existing tables are reused where appropriate.
 
 ## Security rules
 
@@ -79,10 +72,8 @@ The initial additive columns, foreign keys, indexes, and policies are now live. 
 - Store admin role assignments in a server-controlled source and deny users direct writes to role records.
 - Enable RLS on every table in the exposed `public` schema.
 - Give authenticated users access only to their own jobs, credit account, ledger, and usage-visible records.
-- Keep model catalogue and active customer pricing readable only as needed by authenticated users; only admins may modify them.
+- Keep the provider model catalogue readable to the authenticated owner; only the owner admin may modify it.
 - Keep provider secrets server-side. Never add service-role or provider keys to Vite environment variables.
-- Credit reservations and settlements must be atomic and idempotent. Client-supplied prices are never authoritative.
-- Keep ledger entries immutable; use compensating refund/adjustment entries instead of editing history.
 - Keep storage buckets private and validate ownership before issuing signed URLs.
 
 ## Migration workflow
@@ -114,10 +105,10 @@ Supabase CLI v3 changes remote-command behavior: hosted database changes require
 
 ## Next implementation steps
 
-1. Implement atomic credit reservation, settlement, and refund database functions with idempotency.
-2. Add provider model registry seed/configuration only after verifying each provider's current API and content policy.
-3. Add server-side provider adapters and model-routing service.
-4. Add automated tests for RLS, admin-only model/pricing changes, cross-user isolation, and duplicate callbacks.
-5. Add the admin UI and generation job status API.
+1. Configure the verified provider model catalogue and capability metadata.
+2. Implement server-side provider adapters and automatic/manual model routing.
+3. Connect the existing character library to provider-specific reference inputs.
+4. Add automated tests for owner-only access, RLS, provider failures, and job idempotency.
+5. Add private settings and generation job status UI.
 
-The database migration has been applied to the linked Supabase project. No provider credentials were added, no provider calls were made, and no frontend or production application deployment was performed.
+There is no customer billing, credit system, subscription flow, or payment integration. Provider usage/cost telemetry is optional and informational only. No provider credentials were added, no provider calls were made, and no frontend or production application deployment was performed.
