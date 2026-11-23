@@ -43,7 +43,7 @@ export default function App() {
   const [config, setConfig] = useState(() => ({ ...defaults, ...load("ccp-config", {}) }));
   const [provider, setProvider] = useState("openai");
   const [providerMode, setProviderMode] = useState("auto");
-  const [veniceModel, setVeniceModel] = useState("z-image-turbo");
+  
   const [session, setSession] = useState(null);
   const [authReady, setAuthReady] = useState(false);
   const [activeComicId, setActiveComicId] = useState(null);
@@ -279,7 +279,7 @@ export default function App() {
       const response = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: "Bearer " + authData.session.access_token },
-        body: JSON.stringify({ selection: providerMode === "auto" ? { mode: "auto" } : { mode: "manual", provider }, config: payload, veniceModel })
+        body: JSON.stringify({ selection: providerMode === "auto" ? { mode: "auto" } : { mode: "manual", provider }, config: payload })
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Generation failed.");
@@ -522,7 +522,7 @@ export default function App() {
             </div>}
             {providerMode === "auto" && <div className="provider-note"><Sparkles size={16}/> The router checks enabled model records, credentials, style, content category, aspect ratio and reference-image support before selecting exactly one model. No fallback fan-out.</div>}
             {providerMode === "manual" && provider === "openai" && <div className="provider-note"><Sparkles size={16}/> OpenAI supports reference-image input and conversational refinement when the selected model is configured for those capabilities.</div>}
-            {providerMode === "manual" && provider === "venice" && <Field label="VENICE MODEL"><input value={veniceModel} onChange={e => setVeniceModel(e.target.value)} title="Set VENICE_IMAGE_MODEL in server .env"/></Field>}
+            {providerMode === "manual" && <div className="provider-note"><ShieldCheck size={16}/> Manual selection uses the exact model enabled in the server-side registry. Browser-entered model IDs cannot override server configuration.</div>}
             <div className="provider-note"><ShieldCheck size={16}/> Provider credentials stay on your server. Model availability and content rules are controlled by each provider.</div>
             <button className="advanced-toggle" onClick={() => setAdvanced(v => !v)}><Settings2 size={15}/> Advanced content settings <ChevronDown size={15}/></button>
             {advanced && <div className="adult-settings"><label className="toggle-row"><span><b>18+ mature-content mode</b><small>For adult-only fictional characters and themes. Provider policies still apply.</small></span><input type="checkbox" checked={!!config.adultMode} onChange={e => { if (e.target.checked && window.confirm("I confirm I am 18 or older and will only create content featuring clearly adult fictional characters. Provider policies still apply.")) set("adultMode", true); else set("adultMode", false); }}/></label>
