@@ -292,7 +292,7 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
-app.post("/api/generate", requireAuthenticatedUser, validateGenerationRequest, enforceGenerationLimit, async (req, res) => {
+app.post("/api/generate", requireAuthenticatedUser, validateGenerationRequest, async (req, res) => {
   let jobId = null;
   const startedAt = Date.now();
   try {
@@ -320,6 +320,14 @@ app.post("/api/generate", requireAuthenticatedUser, validateGenerationRequest, e
         ? "No compatible model is enabled for automatic routing. Enable a verified model in Provider Models with matching style, aspect-ratio and reference-image capabilities."
         : "No compatible enabled model is configured for that provider. Check its registry entry, credentials and capabilities."
     });
+
+    const { data: quota, error: quotaError } = await req.userSupabase.rpc("reserve_generation");
+    if (quotaError) throw new Error("Could not verify your generation allowance.");
+    if (!quota?.allowed) return res.status(429).json({
+      error: "You've reached the current beta limit of 10 generated pages per hour. Please try again after the limit resets.",
+      quota
+    });
+    req.generationQuota = quota;
 
     const prompt = buildComicPrompt({ ...config, panels }, chosen.provider_key === "venice" ? 1490 : 30000);
     const idempotencyKey = clip(req.headers["idempotency-key"], 120) || randomUUID();
@@ -408,6 +416,14 @@ app.get("/api/replicate/:id", requireAuthenticatedUser, async (req, res) => {
     const data = await response.json().catch(() => ({}));
     if (!response.ok) return res.status(response.status).json({ error: data.detail || "Could not read Replicate prediction." });
     const image = data.status === "succeeded" ? imageFromReplicateOutput(data.output) : null;
+    if (["succeeded", "failed", "canceled"].includes(data.status)) {
+      await req.userSupabase.from("generation_jobs").update({
+        status: data.status === "succeeded" ? "completed" : "failed",
+        error_code: data.status === "succeeded" ? null : "replicate_prediction_" + data.status,
+        error_message: data.error ? clip(data.error, 500) : null,
+        completed_at: new Date().toISOString()
+      }).eq("provider_request_id", req.params.id).eq("user_id", req.user.id);
+    }
     res.json({
       id: data.id,
       status: data.status,
