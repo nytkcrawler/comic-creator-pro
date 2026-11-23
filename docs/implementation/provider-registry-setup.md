@@ -4,7 +4,9 @@ The router is registry-first. A provider credential being present does **not** a
 
 ## Configure a model
 
-In Supabase SQL Editor, inspect the existing registry:
+Sign in with the owner account and open **Provider Manager** in the app sidebar. The screen is visible only when the signed-in account has the `admin` role. Use **Provider models** to register or edit a model, define exact style/content/aspect-ratio support, set reference-image limits, and control manual/automatic eligibility. Use **Routing rules** to add style/content-specific preferences and weights. The UI reads and writes the existing Supabase registry directly under admin-only row-level security.
+
+The SQL examples below are an optional inspection and recovery path, not the normal workflow. In Supabase SQL Editor, inspect the existing registry:
 
 ```sql
 select provider_key, model_key, display_name, capabilities,
