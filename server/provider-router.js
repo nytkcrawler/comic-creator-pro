@@ -42,9 +42,9 @@ export function selectProviderModel(models, request, env = process.env) {
   });
   if (!candidates.length) return null;
 
-  const rule = request.routingRules?.find(item =>
-    item.enabled && item.style_key === request.style && item.content_category === request.contentCategory
-  );
+  const rule = (request.routingRules || [])
+    .filter(item => item.enabled && item.style_key === request.style && item.content_category === request.contentCategory)
+    .sort((a, b) => Number(a.priority || 100) - Number(b.priority || 100))[0];
   const preferredId = rule?.provider_model_id;
   const weights = rule?.weights && typeof rule.weights === "object"
     ? rule.weights
