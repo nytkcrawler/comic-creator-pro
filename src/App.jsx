@@ -39,6 +39,179 @@ function Select({ value, onChange, items }) {
   return <div className="select-wrap"><select value={value} onChange={e => onChange(e.target.value)}>{items.map(item => <option key={item}>{item}</option>)}</select><ChevronDown size={16}/></div>;
 }
 
+const emptyModel = {
+  id: null, provider_key: "openai", model_key: "", display_name: "", description: "",
+  aspect_ratios: "Portrait 2:3, Portrait 3:4, Vertical 9:16, Landscape 16:9, Square 1:1, Comic Page A4",
+  styles: "*", categories: "general", supports_reference_images: false,
+  max_reference_images: 0, supports_single_page_output: true, supports_edit: false,
+  quality: 0.7, identity: 0.7, layout: 0.7, cost: 0.5,
+  enabled: false, auto_routing_enabled: false, routing_priority: 100
+};
+
+function ProviderManager({ supabase }) {
+  const [models, setModels] = useState([]);
+  const [rules, setRules] = useState([]);
+  const [form, setForm] = useState(emptyModel);
+  const [ruleForm, setRuleForm] = useState({ style_key: styles[0], content_category: "general", provider_model_id: "", priority: 100, quality: 0.4, identity: 0.25, layout: 0.2, cost: 0.15, enabled: true });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+  const [failure, setFailure] = useState("");
+  const [tab, setTab] = useState("models");
+
+  async function refresh() {
+    setLoading(true); setFailure("");
+    const [modelResult, ruleResult] = await Promise.all([
+      supabase.from("provider_models").select("*").order("provider_key").order("routing_priority"),
+      supabase.from("model_routing_rules").select("*,provider_models(display_name,provider_key,model_key)").order("style_key").order("priority")
+    ]);
+    if (modelResult.error || ruleResult.error) {
+      setFailure(modelResult.error?.message || ruleResult.error?.message || "Could not load provider settings.");
+    } else {
+      setModels(modelResult.data || []);
+      setRules(ruleResult.data || []);
+    }
+    setLoading(false);
+  }
+
+  useEffect(() => { refresh(); }, []);
+
+  const update = (key, value) => setForm(current => ({ ...current, [key]: value }));
+  function editModel(model) {
+    const caps = model.capabilities || {};
+    setForm({
+      id: model.id, provider_key: model.provider_key, model_key: model.model_key,
+      display_name: model.display_name, description: model.description || "",
+      aspect_ratios: (caps.aspectRatios || []).join(", "),
+      styles: (model.supported_styles || []).join(", "),
+      categories: (model.supported_content_categories || []).join(", "),
+      supports_reference_images: model.supports_reference_images,
+      max_reference_images: model.max_reference_images,
+      supports_single_page_output: model.supports_single_page_output,
+      supports_edit: Boolean(caps.supportsEdit),
+      quality: caps.scores?.quality ?? 0.7, identity: caps.scores?.identity ?? 0.7,
+      layout: caps.scores?.layout ?? 0.7, cost: caps.scores?.cost ?? 0.5,
+      enabled: model.enabled, auto_routing_enabled: model.auto_routing_enabled,
+      routing_priority: model.routing_priority
+    });
+    setTab("models");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  async function saveModel(event) {
+    event.preventDefault(); setSaving(true); setFailure(""); setMessage("");
+    const payload = {
+      provider_key: form.provider_key, model_key: form.model_key.trim(),
+      display_name: form.display_name.trim(), description: form.description.trim() || null,
+      capabilities: {
+        aspectRatios: form.aspect_ratios.split(",").map(x => x.trim()).filter(Boolean),
+        supportsEdit: Boolean(form.supports_edit),
+        scores: { quality: Number(form.quality), identity: Number(form.identity), layout: Number(form.layout), cost: Number(form.cost) }
+      },
+      supported_styles: form.styles.split(",").map(x => x.trim()).filter(Boolean),
+      supported_content_categories: form.categories.split(",").map(x => x.trim()).filter(Boolean),
+      supports_reference_images: Boolean(form.supports_reference_images),
+      max_reference_images: Number(form.max_reference_images) || 0,
+      supports_single_page_output: Boolean(form.supports_single_page_output),
+      enabled: Boolean(form.enabled), auto_routing_enabled: Boolean(form.auto_routing_enabled),
+      routing_priority: Number(form.routing_priority) || 100
+    };
+    if (!payload.model_key || !payload.display_name || !payload.supported_styles.length || !payload.supported_content_categories.length) {
+      setFailure("Model ID, display name, at least one style and at least one content category are required.");
+      setSaving(false); return;
+    }
+    const query = form.id
+      ? supabase.from("provider_models").update(payload).eq("id", form.id)
+      : supabase.from("provider_models").insert(payload);
+    const { error } = await query;
+    if (error) setFailure(error.message);
+    else { setMessage(form.enabled ? "Model settings saved. Verify it with a real generation test." : "Model saved in disabled state."); setForm(emptyModel); await refresh(); }
+    setSaving(false);
+  }
+
+  async function removeModel(model) {
+    if (!window.confirm("Delete " + model.display_name + "? Any routing rule that uses it must be removed first.")) return;
+    const { error } = await supabase.from("provider_models").delete().eq("id", model.id);
+    if (error) setFailure(error.message); else { setMessage("Model deleted."); await refresh(); }
+  }
+
+  async function saveRule(event) {
+    event.preventDefault(); setSaving(true); setFailure(""); setMessage("");
+    if (!ruleForm.provider_model_id) { setFailure("Choose a model for this routing rule."); setSaving(false); return; }
+    const { error } = await supabase.from("model_routing_rules").insert({
+      style_key: ruleForm.style_key, content_category: ruleForm.content_category,
+      provider_model_id: ruleForm.provider_model_id, priority: Number(ruleForm.priority) || 100,
+      weights: { quality: Number(ruleForm.quality), identity: Number(ruleForm.identity), layout: Number(ruleForm.layout), cost: Number(ruleForm.cost) },
+      enabled: Boolean(ruleForm.enabled)
+    });
+    if (error) setFailure(error.message); else { setMessage("Routing rule added."); await refresh(); }
+    setSaving(false);
+  }
+
+  async function toggleRule(rule) {
+    const { error } = await supabase.from("model_routing_rules").update({ enabled: !rule.enabled }).eq("id", rule.id);
+    if (error) setFailure(error.message); else await refresh();
+  }
+  async function deleteRule(rule) {
+    if (!window.confirm("Delete this routing rule?")) return;
+    const { error } = await supabase.from("model_routing_rules").delete().eq("id", rule.id);
+    if (error) setFailure(error.message); else await refresh();
+  }
+
+  return <section className="provider-manager">
+    <div className="section-heading"><div><span className="step">ADMIN</span><div><h2>Provider Manager</h2><p>Manage verified model adapters and automatic routing for your private studio.</p></div></div><button className="outline-btn" onClick={refresh} disabled={loading}><RefreshCw size={15}/> Refresh</button></div>
+    <div className="manager-notice"><ShieldCheck size={18}/><div><b>Owner controls only</b><p>Credentials remain in server environment variables. This screen stores model identifiers and verified capabilities, never API keys. Keep new models disabled until tested.</p></div></div>
+    <div className="manager-tabs"><button className={tab === "models" ? "active" : ""} onClick={() => setTab("models")}>Provider models ({models.length})</button><button className={tab === "rules" ? "active" : ""} onClick={() => setTab("rules")}>Routing rules ({rules.length})</button></div>
+    {failure && <div className="error-box"><AlertCircle size={16}/>{failure}</div>}
+    {message && <div className="manager-success">{message}</div>}
+    {tab === "models" && <>
+      <form className="panel-card manager-form" onSubmit={saveModel}>
+        <div className="card-heading"><span className="icon-tile"><Settings2 size={18}/></span><div><h3>{form.id ? "Edit provider model" : "Register a provider model"}</h3><p>Declare only capabilities you've confirmed for the exact model and adapter.</p></div></div>
+        <div className="two-col">
+          <Field label="PROVIDER"><Select value={form.provider_key} onChange={v => update("provider_key", v)} items={["openai","venice","replicate"]}/></Field>
+          <Field label="EXACT MODEL ID"><input value={form.model_key} onChange={e => update("model_key",e.target.value)} placeholder="Exact server-configured model ID" required/></Field>
+        </div>
+        <Field label="DISPLAY NAME"><input value={form.display_name} onChange={e => update("display_name",e.target.value)} placeholder="Friendly model name" required/></Field>
+        <Field label="DESCRIPTION"><input value={form.description} onChange={e => update("description",e.target.value)} placeholder="Verified use case or notes"/></Field>
+        <Field label="SUPPORTED ART STYLES"><input value={form.styles} onChange={e => update("styles",e.target.value)} placeholder="Comma-separated exact style names, or *"/></Field>
+        <Field label="CONTENT CATEGORIES"><input value={form.categories} onChange={e => update("categories",e.target.value)} placeholder="general, mature"/></Field>
+        <Field label="ASPECT RATIOS"><input value={form.aspect_ratios} onChange={e => update("aspect_ratios",e.target.value)} placeholder="Comma-separated ratios exactly matching studio options"/></Field>
+        <div className="two-col">
+          <Field label="MAX REFERENCE IMAGES"><input type="number" min="0" max="4" value={form.max_reference_images} onChange={e => update("max_reference_images",e.target.value)}/></Field>
+          <Field label="ROUTING PRIORITY"><input type="number" min="1" max="10000" value={form.routing_priority} onChange={e => update("routing_priority",e.target.value)}/></Field>
+        </div>
+        <div className="manager-checks">
+          <label><input type="checkbox" checked={form.supports_reference_images} onChange={e => update("supports_reference_images",e.target.checked)}/> Supports reference images</label>
+          <label><input type="checkbox" checked={form.supports_single_page_output} onChange={e => update("supports_single_page_output",e.target.checked)}/> Verified single-page output</label>
+          <label><input type="checkbox" checked={form.supports_edit} onChange={e => update("supports_edit",e.target.checked)}/> Supports editing/refinement</label>
+          <label><input type="checkbox" checked={form.enabled} onChange={e => update("enabled",e.target.checked)}/> Enable model for manual selection</label>
+          <label><input type="checkbox" checked={form.auto_routing_enabled} onChange={e => update("auto_routing_enabled",e.target.checked)}/> Allow automatic routing</label>
+        </div>
+        <div className="manager-score-grid"><b>Routing score estimates (0 to 1)</b>{["quality","identity","layout","cost"].map(key => <Field key={key} label={key.toUpperCase()}><input type="number" min="0" max="1" step="0.05" value={form[key]} onChange={e => update(key,e.target.value)}/></Field>)}</div>
+        <div className="manager-actions"><button className="generate-btn" type="submit" disabled={saving}>{saving ? "Saving…" : form.id ? "Update model" : "Register model"}</button><button className="outline-btn" type="button" onClick={() => setForm(emptyModel)}>Clear form</button></div>
+      </form>
+      <div className="manager-model-list"><h3>Registered models</h3>{loading ? <p>Loading registry…</p> : models.length === 0 ? <div className="empty-gallery">No models registered yet. Add a verified model above.</div> : models.map(model => <article className="manager-model" key={model.id}>
+        <div><div className="manager-model-title"><b>{model.display_name}</b><span className={"manager-state " + (model.enabled ? "enabled" : "")}>{model.enabled ? "Enabled" : "Disabled"}</span>{model.auto_routing_enabled && <span className="manager-state enabled">Auto</span>}</div><small>{model.provider_key} · {model.model_key}</small><p>{(model.supported_styles || []).join(", ")} · {(model.supported_content_categories || []).join(", ")}</p><small>{model.supports_reference_images ? "References up to " + model.max_reference_images : "No references"} · {model.supports_single_page_output ? "Single-page verified" : "Single-page unverified"} · Priority {model.routing_priority}</small></div>
+        <div className="manager-actions"><button className="outline-btn" type="button" onClick={() => editModel(model)}>Edit</button><button className="outline-btn danger-btn" type="button" onClick={() => removeModel(model)}>Delete</button></div>
+      </article>)}</div>
+    </>}
+    {tab === "rules" && <>
+      <form className="panel-card manager-form" onSubmit={saveRule}>
+        <div className="card-heading"><span className="icon-tile"><LayoutGrid size={18}/></span><div><h3>Add routing preference</h3><p>Rules only rank models that already pass every compatibility check.</p></div></div>
+        <div className="two-col">
+          <Field label="ART STYLE"><Select value={ruleForm.style_key} onChange={v => setRuleForm(x => ({...x,style_key:v}))} items={styles}/></Field>
+          <Field label="CONTENT CATEGORY"><Select value={ruleForm.content_category} onChange={v => setRuleForm(x => ({...x,content_category:v}))} items={["general","mature"]}/></Field>
+        </div>
+        <Field label="PREFERRED MODEL"><Select value={ruleForm.provider_model_id} onChange={v => setRuleForm(x => ({...x,provider_model_id:v}))} items={["",...models.map(m => m.id + " · " + m.display_name)] .map(x => x.includes(" · ") ? x : "Select a model")}/></Field>
+        <div className="two-col">{["quality","identity","layout","cost"].map(key => <Field key={key} label={key.toUpperCase()+" WEIGHT"}><input type="number" min="0" max="1" step="0.05" value={ruleForm[key]} onChange={e => setRuleForm(x => ({...x,[key]:e.target.value}))}/></Field>)}</div>
+        <Field label="RULE PRIORITY"><input type="number" min="1" value={ruleForm.priority} onChange={e => setRuleForm(x => ({...x,priority:e.target.value}))}/></Field>
+        <button className="generate-btn" type="submit" disabled={saving || !models.length}>Add routing rule</button>
+      </form>
+      <div className="manager-model-list"><h3>Existing rules</h3>{rules.length === 0 ? <div className="empty-gallery">No routing preferences configured. The router will use model scores and priority.</div> : rules.map(rule => <article className="manager-model" key={rule.id}><div><b>{rule.style_key} · {rule.content_category}</b><p>{rule.provider_models?.display_name || "Model"} · Priority {rule.priority}</p><small>{JSON.stringify(rule.weights)}</small></div><div className="manager-actions"><button className="outline-btn" onClick={() => toggleRule(rule)}>{rule.enabled ? "Disable" : "Enable"}</button><button className="outline-btn danger-btn" onClick={() => deleteRule(rule)}>Delete</button></div></article>)}</div>
+    </>}
+  </section>;
+}
+
 export default function App() {
   const [config, setConfig] = useState(() => ({ ...defaults, ...load("ccp-config", {}) }));
   const [provider, setProvider] = useState("openai");
@@ -61,6 +234,8 @@ export default function App() {
   const [saved, setSaved] = useState(() => load("ccp-characters", []));
   const [characterName, setCharacterName] = useState("");
   const [advanced, setAdvanced] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [activeView, setActiveView] = useState("studio");
 
   useEffect(() => { fetch("/api/health").then(r => r.json()).then(setHealth).catch(() => {}); }, []);
   useEffect(() => {
@@ -75,6 +250,16 @@ export default function App() {
     });
     return () => { active = false; subscription.unsubscribe(); };
   }, []);
+  useEffect(() => {
+    if (!session?.user?.id || !supabase) { setIsAdmin(false); return; }
+    let alive = true;
+    supabase.from("user_roles").select("role").eq("user_id", session.user.id).eq("role", "admin")
+      .maybeSingle().then(({ data, error }) => {
+        if (alive) setIsAdmin(!error && Boolean(data));
+      });
+    return () => { alive = false; };
+  }, [session?.user?.id]);
+
   useEffect(() => { localStorage.setItem("ccp-config", JSON.stringify(config)); }, [config]);
   useEffect(() => { localStorage.setItem("ccp-history", JSON.stringify(history.slice(0, 20))); }, [history]);
   useEffect(() => { localStorage.setItem("ccp-characters", JSON.stringify(saved)); }, [saved]);
@@ -432,9 +617,10 @@ export default function App() {
     <aside className="sidebar">
       <div className="brand"><div className="brand-mark"><WandSparkles size={22}/></div><div><b>COMIC CREATOR</b><small>PRO STUDIO</small></div></div>
       <div className="side-label">WORKSPACE</div>
-      <a className="nav active"><Palette size={17}/> Comic Studio</a>
-      <a className="nav" href="#characters"><Users size={17}/> Character Library</a>
-      <a className="nav" href="#gallery"><ImagePlus size={17}/> My Creations</a>
+      <button className={"nav " + (activeView === "studio" ? "active" : "")} onClick={() => setActiveView("studio")}><Palette size={17}/> Comic Studio</button>
+      <a className="nav" href="#characters" onClick={() => setActiveView("studio")}><Users size={17}/> Character Library</a>
+      <a className="nav" href="#gallery" onClick={() => setActiveView("studio")}><ImagePlus size={17}/> My Creations</a>
+      {isAdmin && <><div className="side-label manager-nav-label">OWNER</div><button className={"nav " + (activeView === "providers" ? "active" : "")} onClick={() => setActiveView("providers")}><Settings2 size={17}/> Provider Manager</button></>}
       <div className="side-bottom"><div className="side-status"><span className="pulse"/> Studio ready</div><small>Version 1.0 · Local workspace</small></div>
     </aside>
 
@@ -449,6 +635,7 @@ export default function App() {
         </div>
       </header>
 
+      {activeView === "providers" && isAdmin ? <ProviderManager supabase={supabase}/> : <>
       <section className="hero"><div><div className="eyebrow"><Sparkles size={13}/> YOUR CREATIVE UNIVERSE</div><h1>Bring your stories<br/><em>to life.</em></h1><p>Design cinematic comic pages with your favorite art styles, characters and AI models.</p></div><div className="hero-art"><div className="hero-orbit orbit-one"/><div className="hero-orbit orbit-two"/><div className="hero-stamp">PANEL<br/>TO<br/>PANEL</div><div className="hero-spark">✦</div></div></section>
 
       <div className="section-heading"><div><span className="step">01</span><div><h2>Comic configuration</h2><p>Shape every detail of your next comic page.</p></div></div><span className="autosave">✓ Auto-saved</span></div>
@@ -570,6 +757,7 @@ export default function App() {
         {history.length === 0 ? <div className="empty-gallery"><ImagePlus size={24}/><b>Your gallery is waiting</b><span>Generated comics will appear here.</span></div> : <div className="history-grid">{history.map(item => <button className="history-thumb" key={item.id} onClick={() => { setResult(item.image); setConfig(item.config); setProvider(item.provider); setActiveComicId(item.id); setRefinement(""); window.scrollTo({ top: 0, behavior: "smooth" }); }}><img src={item.image} alt="Past comic"/><span>{item.config.style} · {item.config.panels} panels</span></button>)}</div>}
       </section>
       <footer>COMIC CREATOR PRO <span>Made for storytellers.</span></footer>
+      </>}
     </main>
   </div>;
 }
