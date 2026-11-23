@@ -42,6 +42,7 @@ function Select({ value, onChange, items }) {
 export default function App() {
   const [config, setConfig] = useState(() => ({ ...defaults, ...load("ccp-config", {}) }));
   const [provider, setProvider] = useState("openai");
+  const [providerMode, setProviderMode] = useState("auto");
   const [veniceModel, setVeniceModel] = useState("z-image-turbo");
   const [session, setSession] = useState(null);
   const [authReady, setAuthReady] = useState(false);
@@ -273,19 +274,17 @@ export default function App() {
     try {
       const { data: authData, error: authError } = await supabase.auth.getSession();
       if (authError || !authData?.session) throw new Error("Please sign in again before generating.");
-      const referenceImages = provider === "openai"
-        ? await Promise.all(refs.slice(0,4).map(toOpenAiReferenceDataUrl))
-        : refs.slice(0,4).map(x => x.url);
+      const referenceImages = refs.length ? await Promise.all(refs.slice(0,4).map(toOpenAiReferenceDataUrl)) : [];
       const payload = { ...config, referenceImages, referenceManifest: refs.slice(0,4).map(({ name, character, view }) => ({ name, character, view })) };
       const response = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: "Bearer " + authData.session.access_token },
-        body: JSON.stringify({ provider, config: payload, veniceModel })
+        body: JSON.stringify({ selection: providerMode === "auto" ? { mode: "auto" } : { mode: "manual", provider }, config: payload, veniceModel })
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Generation failed.");
       let image = data.image;
-      if (provider === "replicate" && data.predictionId && data.status !== "succeeded") {
+      if (data.provider === "replicate" && data.predictionId && data.status !== "succeeded") {
         let completed = false;
         for (let i = 0; i < 90; i++) {
           await new Promise(resolve => setTimeout(resolve, 2500));
@@ -303,10 +302,12 @@ export default function App() {
       if (!image) throw new Error("The provider completed without returning an image. Check your model output configuration.");
       setResult(image);
       setStatus(data.blurred ? "Generated. Venice marked the result as blurred." : "Your complete comic page is ready. Saving it to your library…");
-      const localItem = { id: Date.now(), image, config: { ...config }, provider, responseId: data.responseId || null };
+      const generationProvider = data.provider || provider;
+      setProvider(generationProvider);
+      const localItem = { id: Date.now(), image, config: { ...config }, provider: generationProvider, responseId: data.responseId || null };
       setHistory(h => [localItem, ...h]);
       try {
-        const savedComic = await saveComicPage(image, { ...config }, provider, data.responseId || null);
+        const savedComic = await saveComicPage(image, { ...config }, generationProvider, data.responseId || null);
         setActiveComicId(savedComic.id);
         setHistory(h => [savedComic, ...h.filter(item => item.id !== localItem.id)]);
         setStatus("Your complete comic page is saved to your account.");
@@ -511,12 +512,17 @@ export default function App() {
           <div className="panel-card provider-card">
             <div className="card-heading"><span className="icon-tile"><Settings2 size={18}/></span><div><h3>AI generation engine</h3><p>Choose which connected provider renders your page.</p></div></div>
             <div className="provider-options">
-              <button className={provider === "openai" ? "provider-option selected" : "provider-option"} onClick={() => setProvider("openai")}><b>OpenAI GPT Image</b><small>Conversational image generation and edits</small><span>{health.openai ? "Connected" : "Needs API key"}</span></button>
-              <button className={provider === "venice" ? "provider-option selected" : "provider-option"} onClick={() => setProvider("venice")}><b>Venice AI</b><small>Image generation API</small><span>{health.venice ? "Connected" : "Needs API key"}</span></button>
-              <button className={provider === "replicate" ? "provider-option selected" : "provider-option"} onClick={() => setProvider("replicate")}><b>Replicate</b><small>Configurable model endpoint</small><span>{health.replicate ? "Connected" : "Needs API key + model"}</span></button>
+              <button className={providerMode === "auto" ? "provider-option selected" : "provider-option"} onClick={() => setProviderMode("auto")}><b>Automatic routing</b><small>Choose the best enabled model for this style, layout and references.</small><span>Capability-aware</span></button>
+              <button className={providerMode === "manual" ? "provider-option selected" : "provider-option"} onClick={() => setProviderMode("manual")}><b>Manual override</b><small>Choose a specific provider. Registry compatibility checks still apply.</small><span>Owner control</span></button>
             </div>
-            {provider === "openai" && <div className="provider-note"><Sparkles size={16}/> OpenAI uses the Responses API with image references and multi-turn refinement. One request returns one complete comic page.</div>}
-            {provider === "venice" && <Field label="VENICE MODEL"><input value={veniceModel} onChange={e => setVeniceModel(e.target.value)} title="Set VENICE_IMAGE_MODEL in server .env"/></Field>}
+            {providerMode === "manual" && <div className="provider-options">
+              <button className={provider === "openai" ? "provider-option selected" : "provider-option"} onClick={() => setProvider("openai")}><b>OpenAI GPT Image</b><small>Responses API image generation</small><span>{health.openai ? "Credentials connected" : "Needs API key"}</span></button>
+              <button className={provider === "venice" ? "provider-option selected" : "provider-option"} onClick={() => setProvider("venice")}><b>Venice AI</b><small>Image generation API</small><span>{health.venice ? "Credentials connected" : "Needs API key"}</span></button>
+              <button className={provider === "replicate" ? "provider-option selected" : "provider-option"} onClick={() => setProvider("replicate")}><b>Replicate</b><small>Configured model endpoint</small><span>{health.replicate ? "Credentials connected" : "Needs API key + model"}</span></button>
+            </div>}
+            {providerMode === "auto" && <div className="provider-note"><Sparkles size={16}/> The router checks enabled model records, credentials, style, content category, aspect ratio and reference-image support before selecting exactly one model. No fallback fan-out.</div>}
+            {providerMode === "manual" && provider === "openai" && <div className="provider-note"><Sparkles size={16}/> OpenAI supports reference-image input and conversational refinement when the selected model is configured for those capabilities.</div>}
+            {providerMode === "manual" && provider === "venice" && <Field label="VENICE MODEL"><input value={veniceModel} onChange={e => setVeniceModel(e.target.value)} title="Set VENICE_IMAGE_MODEL in server .env"/></Field>}
             <div className="provider-note"><ShieldCheck size={16}/> Provider credentials stay on your server. Model availability and content rules are controlled by each provider.</div>
             <button className="advanced-toggle" onClick={() => setAdvanced(v => !v)}><Settings2 size={15}/> Advanced content settings <ChevronDown size={15}/></button>
             {advanced && <div className="adult-settings"><label className="toggle-row"><span><b>18+ mature-content mode</b><small>For adult-only fictional characters and themes. Provider policies still apply.</small></span><input type="checkbox" checked={!!config.adultMode} onChange={e => { if (e.target.checked && window.confirm("I confirm I am 18 or older and will only create content featuring clearly adult fictional characters. Provider policies still apply.")) set("adultMode", true); else set("adultMode", false); }}/></label>
