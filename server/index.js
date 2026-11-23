@@ -395,6 +395,7 @@ app.post("/api/refine", requireAuthenticatedUser, requireOpenAIConfigured, enfor
     const result = await generateWithOpenAI(
       "",
       generationConfig,
+      process.env.OPENAI_RESPONSE_MODEL || "gpt-5.5",
       generationConfig.responseId,
       instruction
     );
