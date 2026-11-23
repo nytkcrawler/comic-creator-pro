@@ -1,8 +1,8 @@
 const PROVIDERS = new Set(["openai", "venice", "replicate"]);
 
 export function providerIsConfigured(provider, env = process.env) {
-  if (provider === "openai") return Boolean(env.OPENAI_API_KEY && env.OPENAI_RESPONSE_MODEL);
-  if (provider === "venice") return Boolean(env.VENICE_API_KEY && env.VENICE_IMAGE_MODEL);
+  if (provider === "openai") return Boolean(env.OPENAI_API_KEY);
+  if (provider === "venice") return Boolean(env.VENICE_API_KEY);
   if (provider === "replicate") return Boolean(env.REPLICATE_API_TOKEN && env.REPLICATE_MODEL_OWNER && env.REPLICATE_MODEL_NAME);
   return false;
 }
@@ -25,6 +25,8 @@ export function compatibilityReasons(model, request, env = process.env) {
   if (request.referenceCount > 0 && (!model?.supports_reference_images || request.referenceCount > Number(model.max_reference_images || 0))) {
     reasons.push("reference-image requirements unsupported");
   }
+  if (request.referenceCount > 0 && provider === "venice") reasons.push("Venice adapter does not currently pass reference images");
+  if (request.referenceCount > 0 && provider === "replicate" && !env.REPLICATE_REFERENCE_INPUT_KEY) reasons.push("Replicate reference input key is not configured");
   if (request.isEdit && caps.supportsEdit !== true) reasons.push("editing unsupported");
   if (provider === "openai" && model.model_key !== (env.OPENAI_RESPONSE_MODEL || "gpt-5.5")) reasons.push("model key does not match server configuration");
   if (provider === "venice" && model.model_key !== (env.VENICE_IMAGE_MODEL || "z-image-turbo")) reasons.push("model key does not match server configuration");
