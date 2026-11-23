@@ -1,6 +1,6 @@
 # Phase 1: Platform foundation
 
-Status: implementation branch prepared; database migration is blocked pending access to the linked Supabase project.
+Status: Phase 1 database foundation migration applied successfully to the linked Supabase project. API integration, transactional credit functions, seed configuration, and automated authorization tests remain in progress.
 
 ## Repository baseline
 
@@ -10,14 +10,33 @@ Status: implementation branch prepared; database migration is blocked pending ac
 - Existing runtime: React 18 + Vite, Express, Supabase Auth/Postgres/Storage
 - Existing providers: OpenAI, Venice, Replicate
 - Existing page contract: one provider request returns one complete comic-page image; no per-panel generation or stitching
-- Existing tables documented by the app: `public.comics`, `public.comic_pages`
-- Existing private Storage buckets documented by the app: `comic-panels`, `character-refs`
+- Existing tables inspected: `public.comics`, `public.comic_pages`, `public.characters`, `public.character_sets`, `public.user_roles`, `public.generation_usage`, and supporting tables
+- Existing Storage bucket inventory still requires a separate verified review; no bucket was created or modified.
 
-## Current blocker
+## Inspection and migration result
 
-The linked Supabase project `comic-creator-pro` (region `ap-south-1`) currently reports `INACTIVE`. Read-only attempts to inspect its tables and migration history timed out / reported that the database is not accessible. No database schema has been changed.
+The linked Supabase project `comic-creator-pro` in `ap-south-1` is now `ACTIVE_HEALTHY`.
 
-Do not apply a migration until the project is active and the existing schema and migration history have been inspected. This avoids guessing existing columns, duplicating objects, or introducing a migration that cannot be replayed safely.
+Five existing migrations were found:
+- `20261113170001_comic_creator_initial_schema`
+- `20261113170037_comic_creator_rls_performance_hardening`
+- `20261113211603_comic_creator_persistence_and_generation_limits`
+- `20261114045321_comic_page_image_persistence`
+- `20261114045724_allow_openai_comic_pages`
+
+Existing tables already include `characters`, `character_sets`, `user_roles` (enum values: admin, moderator, user), and `generation_usage`. These were reused rather than duplicated. The existing `has_role(uuid, app_role)` helper and user-owned RLS patterns were inspected.
+
+The additive migration `20261123144653_comic_platform_provider_billing_jobs` was successfully applied. All eight new tables were verified in the live database with RLS enabled:
+- `provider_models`
+- `model_pricing`
+- `model_routing_rules`
+- `credit_accounts`
+- `generation_jobs`
+- `credit_ledger`
+- `generation_provider_usage`
+- `admin_audit_log`
+
+The migration was committed to the development branch with a filename matching the applied remote migration version. No existing comic, character, role, or usage tables were recreated or renamed. No provider model rows or pricing values have been seeded yet.
 
 ## Phase 1 scope
 
@@ -52,7 +71,7 @@ Do not apply a migration until the project is active and the existing schema and
 | `public.generation_usage` | Provider request IDs, actual usage, latency, and cost |
 | `public.admin_audit_log` | Audit trail for model, pricing, and routing changes |
 
-The exact columns, foreign keys, indexes, and policies will be finalized only after inspecting the live schema and current application queries.
+The initial additive columns, foreign keys, indexes, and policies are now live. Existing tables are reused where appropriate. Credit reservation/settlement RPCs and provider seed data remain to be implemented.
 
 ## Security rules
 
@@ -93,6 +112,12 @@ Supabase CLI v3 changes remote-command behavior: hosted database changes require
 - Model selection checks provider availability, content eligibility, reference support, and one-image output support.
 - The existing one-page / one-image generation contract remains unchanged.
 
-## Next action required
+## Next implementation steps
 
-The Supabase project is paused/inactive. Restore or resume the linked `comic-creator-pro` project in the Supabase dashboard, then ask to continue. Once it is active, inspect the existing schema and create the first tested migration on this branch. No production database changes have been made.
+1. Implement atomic credit reservation, settlement, and refund database functions with idempotency.
+2. Add provider model registry seed/configuration only after verifying each provider's current API and content policy.
+3. Add server-side provider adapters and model-routing service.
+4. Add automated tests for RLS, admin-only model/pricing changes, cross-user isolation, and duplicate callbacks.
+5. Add the admin UI and generation job status API.
+
+The database migration has been applied to the linked Supabase project. No provider credentials were added, no provider calls were made, and no frontend or production application deployment was performed.
