@@ -26,7 +26,7 @@ Five existing migrations were found:
 
 Existing tables already include `characters`, `character_sets`, `user_roles` (enum values: admin, moderator, user), and `generation_usage`. These were reused rather than duplicated. The existing `has_role(uuid, app_role)` helper and user-owned RLS patterns were inspected.
 
-The additive migration `20261123144653_comic_platform_provider_billing_jobs` was applied. A follow-up migration `20261123150210_private_single_owner_no_billing` removed the unused customer billing tables and assigned the sole existing Auth account the admin role. The following platform tables remain:
+The additive migration `20261123144653_comic_platform_provider_billing_jobs` was applied. A follow-up migration `20261123144852_private_single_owner_no_billing` removed the unused customer billing tables and assigned the sole existing Auth account the admin role. The following platform tables remain:
 - `provider_models`
 - `model_routing_rules`
 - `generation_jobs`
@@ -61,8 +61,8 @@ The migration was committed to the development branch with a filename matching t
 | `public.provider_models` | Provider/model catalogue and capability metadata |
 | `public.model_routing_rules` | Style/content/capability routing priorities |
 | `public.generation_jobs` | Durable generation lifecycle and idempotency |
-| `public.generation_usage` | Provider request IDs, actual usage, latency, and cost |
-| `public.admin_audit_log` | Audit trail for model, pricing, and routing changes |
+| `public.generation_provider_usage` | Provider request IDs, actual usage, latency, and optional cost telemetry |
+| `public.admin_audit_log` | Audit trail for model, provider and routing changes |
 
 The initial additive columns, foreign keys, indexes, and policies are live. The customer billing tables were removed in the follow-up migration. Existing tables are reused where appropriate.
 
@@ -71,7 +71,7 @@ The initial additive columns, foreign keys, indexes, and policies are live. The 
 - Never use `raw_user_meta_data` / user-editable metadata for admin authorization.
 - Store admin role assignments in a server-controlled source and deny users direct writes to role records.
 - Enable RLS on every table in the exposed `public` schema.
-- Give authenticated users access only to their own jobs, credit account, ledger, and usage-visible records.
+- Give the owner access only to their own generation jobs and usage-visible records. There are no customer credit accounts or ledgers.
 - Keep the provider model catalogue readable to the authenticated owner; only the owner admin may modify it.
 - Keep provider secrets server-side. Never add service-role or provider keys to Vite environment variables.
 - Keep storage buckets private and validate ownership before issuing signed URLs.
@@ -95,8 +95,8 @@ Supabase CLI v3 changes remote-command behavior: hosted database changes require
 
 - No existing comic tables or storage buckets are recreated or renamed.
 - Every new exposed table has RLS and explicit grants.
-- Non-admin users cannot change models, pricing, routing, or role assignments.
-- A user cannot read or alter another user's credits, ledger, or generation jobs.
+- Only the owner admin can change models, routing, or role assignments.
+- A user cannot read or alter another user's generation jobs.
 - Concurrent reservations cannot overdraw an account.
 - Duplicate callbacks cannot double-settle or double-refund a job.
 - A provider failure releases the reservation exactly once.
@@ -111,4 +111,4 @@ Supabase CLI v3 changes remote-command behavior: hosted database changes require
 4. Add automated tests for owner-only access, RLS, provider failures, and job idempotency.
 5. Add private settings and generation job status UI.
 
-There is no customer billing, credit system, subscription flow, or payment integration. Provider usage/cost telemetry is optional and informational only. No provider credentials were added, no provider calls were made, and no frontend or production application deployment was performed.
+There is no customer billing, customer credit system, subscription flow, or payment integration. Provider usage/cost telemetry is optional and informational only. No provider credentials were added, no provider calls were made, and no frontend or production application deployment was performed.
